@@ -1,0 +1,12 @@
+[project]
+name = "ml-reentry-serving"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "pytest",
+  "pre-commit",
+]

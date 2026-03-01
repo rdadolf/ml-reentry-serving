@@ -1,0 +1,32 @@
+{
+  "name": "ml-reentry-serving",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "runArgs": ["--gpus", "all"],
+  "remoteUser": "devel",
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/devel/.claude,type=bind",
+    "source=${localEnv:HOME}/.ssh,target=/home/devel/.ssh,type=bind,readonly",
+    "source=${localEnv:HOME}/Work/mlflow,target=/home/devel/mlflow,type=bind"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "charliermarsh.ruff"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "editor.formatOnSave": true,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      }
+    }
+  },
+  "postCreateCommand": "uv sync --extra dev"
+}
