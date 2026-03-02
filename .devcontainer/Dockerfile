@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         nsight-systems \
         curl \
+        ssh \
+        vim \
     && rm -rf /var/lib/apt/lists/*
 
 # Make python3.12 the default python
@@ -37,5 +39,12 @@ RUN uv sync --extra dev \
 
 # Put the uv venv on PATH so dev tools (ruff, pytest, pre-commit) are available
 ENV PATH="/workspace/.venv/bin:${PATH}"
+
+# MLflow: SQLite backend on the persistent bind mount
+ENV MLFLOW_TRACKING_URI="sqlite:////home/devel/mlflow/mlflow.db"
+ENV MLFLOW_DEFAULT_ARTIFACT_ROOT="/home/devel/mlflow/artifacts"
+
+# Alias for mlflow ui (doesn't respect MLFLOW_TRACKING_URI)
+RUN echo 'alias mlflow-ui="mlflow ui --backend-store-uri \$MLFLOW_TRACKING_URI"' >> /home/devel/.bashrc
 
 USER devel

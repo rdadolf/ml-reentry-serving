@@ -4,7 +4,10 @@
     "dockerfile": "Dockerfile",
     "context": ".."
   },
-  "runArgs": ["--gpus", "all"],
+  "runArgs": [
+    "--gpus",
+    "all"
+  ],
   "remoteUser": "devel",
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
@@ -13,6 +16,9 @@
     "source=${localEnv:HOME}/.ssh,target=/home/devel/.ssh,type=bind,readonly",
     "source=${localEnv:HOME}/Work/mlflow,target=/home/devel/mlflow,type=bind"
   ],
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -28,5 +34,8 @@
       }
     }
   },
+  "forwardPorts": [
+    5000
+  ],
   "postCreateCommand": "uv sync --extra dev"
 }
