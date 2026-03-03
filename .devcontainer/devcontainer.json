@@ -23,7 +23,8 @@
     "vscode": {
       "extensions": [
         "anthropic.claude-code",
-        "charliermarsh.ruff"
+        "charliermarsh.ruff",
+        "github.copilot"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
