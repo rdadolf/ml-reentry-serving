@@ -1,3 +1,16 @@
+// Devcontainer template for worktree-based development.
+//
+// WHY DUAL MOUNTS: Git worktrees use .git pointer files containing relative
+// paths (e.g., gitdir: ../../<repo>/.git/worktrees/<name>). For these paths
+// to resolve inside a container, both the worktree AND the main repo must be
+// mounted as siblings under the same parent — exactly mirroring the host layout.
+//
+// The `wt create` command rewrites git pointer files to use relative paths at
+// creation time, so no runtime fixup is needed. This template just ensures
+// both directories are available where the relative paths expect them.
+//
+// PLACEHOLDER: ml-reentry-serving is replaced by the `dev-init` script with the actual
+// repo directory name.
 {
   "name": "ml-reentry-serving",
   "build": {
@@ -9,16 +22,29 @@
     "all"
   ],
   "remoteUser": "devel",
-  "workspaceFolder": "/workspace",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+  // Mount the worktree (or main repo) as the VS Code workspace.
+  // ${localWorkspaceFolderBasename} resolves to the directory name on the host,
+  // so /workspace/<dir-name> matches the host-side sibling layout.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/${localWorkspaceFolderBasename},type=bind",
+  "workspaceFolder": "/workspace/${localWorkspaceFolderBasename}",
+
+  // Mount the main repo as a sibling so that .git relative paths resolve.
+  // When opened from the main repo itself, this points to the same directory
+  // as the workspace mount — harmless, git works normally either way.
   "mounts": [
+    "source=${localWorkspaceFolder}/../ml-reentry-serving,target=/workspace/ml-reentry-serving,type=bind",
     "source=${localEnv:HOME}/.claude,target=/home/devel/.claude,type=bind",
     "source=${localEnv:HOME}/.ssh,target=/home/devel/.ssh,type=bind,readonly",
     "source=${localEnv:HOME}/Work/mlflow,target=/home/devel/mlflow,type=bind"
   ],
+
   "features": {
-    "ghcr.io/devcontainers/features/git:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {}
   },
+
+  "postCreateCommand": "uv sync --extra dev",
+
   "customizations": {
     "vscode": {
       "extensions": [
@@ -35,8 +61,8 @@
       }
     }
   },
+
   "forwardPorts": [
     5000
-  ],
-  "postCreateCommand": "uv sync --extra dev"
+  ]
 }
