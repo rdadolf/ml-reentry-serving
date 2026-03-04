@@ -1,16 +1,11 @@
-// Devcontainer template for worktree-based development.
+// Worktree-aware devcontainer config.
 //
-// WHY DUAL MOUNTS: Git worktrees use .git pointer files containing relative
-// paths (e.g., gitdir: ../../<repo>/.git/worktrees/<name>). For these paths
-// to resolve inside a container, both the worktree AND the main repo must be
-// mounted as siblings under the same parent — exactly mirroring the host layout.
+// /x/workspace — the active directory (worktree or main repo).
+// /x/ml-reentry-serving — the main repo, mounted as a sibling so git worktree
+//   relative paths (e.g., `gitdir: ../ml-reentry-serving/.git/worktrees/...`)
+//   resolve correctly inside the container.
 //
-// The `wt create` command rewrites git pointer files to use relative paths at
-// creation time, so no runtime fixup is needed. This template just ensures
-// both directories are available where the relative paths expect them.
-//
-// PLACEHOLDER: ml-reentry-serving is replaced by the `dev-init` script with the actual
-// repo directory name.
+// Dockerfiles should use WORKDIR /x/workspace.
 {
   "name": "ml-reentry-serving",
   "build": {
@@ -23,17 +18,15 @@
   ],
   "remoteUser": "devel",
 
-  // Mount the worktree (or main repo) as the VS Code workspace.
-  // ${localWorkspaceFolderBasename} resolves to the directory name on the host,
-  // so /workspace/<dir-name> matches the host-side sibling layout.
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/${localWorkspaceFolderBasename},type=bind",
-  "workspaceFolder": "/workspace/${localWorkspaceFolderBasename}",
+  // Mount the active directory (worktree or main repo) at a static path.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/x/workspace,type=bind",
+  "workspaceFolder": "/x/workspace",
 
-  // Mount the main repo as a sibling so that .git relative paths resolve.
-  // When opened from the main repo itself, this points to the same directory
-  // as the workspace mount — harmless, git works normally either way.
+  // Mount the main repo as a sibling so .git relative paths resolve.
+  // When opened from the main repo itself, this is the same directory
+  // as the workspace mount — harmless.
   "mounts": [
-    "source=${localWorkspaceFolder}/../ml-reentry-serving,target=/workspace/ml-reentry-serving,type=bind",
+    "source=${localWorkspaceFolder}/../ml-reentry-serving,target=/x/ml-reentry-serving,type=bind",
     "source=${localEnv:HOME}/.claude,target=/home/devel/.claude,type=bind",
     "source=${localEnv:HOME}/.ssh,target=/home/devel/.ssh,type=bind,readonly",
     "source=${localEnv:HOME}/Work/mlflow,target=/home/devel/mlflow,type=bind"
@@ -43,6 +36,8 @@
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
 
+  // Custom Dockerfiles should set ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
+  // and run `uv sync` at build time so this becomes a no-op.
   "postCreateCommand": "uv sync --extra dev",
 
   "customizations": {
@@ -53,7 +48,6 @@
         "github.copilot"
       ],
       "settings": {
-        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
         "editor.formatOnSave": true,
         "[python]": {
           "editor.defaultFormatter": "charliermarsh.ruff"

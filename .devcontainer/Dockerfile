@@ -31,14 +31,15 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN usermod -l devel -d /home/devel -m ubuntu \
     && groupmod -n devel ubuntu
 
-# Project setup
-WORKDIR /workspace
+# Install deps to /opt/venv so the bind mount doesn't clobber them.
+# UV_PROJECT_ENVIRONMENT persists, so postCreateCommand's `uv sync` is a no-op.
+ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
+WORKDIR /x/workspace
 COPY pyproject.toml ./
 RUN uv sync --extra dev \
-    && chown -R devel:devel /workspace
+    && chown -R devel:devel /opt/venv
 
-# Put the uv venv on PATH so dev tools (ruff, pytest, pre-commit) are available
-ENV PATH="/workspace/.venv/bin:${PATH}"
+ENV PATH="/opt/venv/bin:${PATH}"
 
 # MLflow: SQLite backend on the persistent bind mount
 ENV MLFLOW_TRACKING_URI="sqlite:////home/devel/mlflow/mlflow.db"
