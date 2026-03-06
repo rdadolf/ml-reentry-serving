@@ -14,14 +14,14 @@
   },
   "runArgs": [
     "--gpus",
-    "all"
+    "all",
+    "--env-file",
+    "${localEnv:HOME}/.hftoken"
   ],
   "remoteUser": "devel",
-
   // Mount the active directory (worktree or main repo) at a static path.
   "workspaceMount": "source=${localWorkspaceFolder},target=/x/workspace,type=bind",
   "workspaceFolder": "/x/workspace",
-
   // Mount the main repo as a sibling so .git relative paths resolve.
   // When opened from the main repo itself, this is the same directory
   // as the workspace mount — harmless.
@@ -31,31 +31,20 @@
     "source=${localEnv:HOME}/.ssh,target=/home/devel/.ssh,type=bind,readonly",
     "source=${localEnv:HOME}/Work/mlflow,target=/home/devel/mlflow,type=bind"
   ],
-
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
-
   // Custom Dockerfiles should set ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
   // and run `uv sync` at build time so this becomes a no-op.
   "postCreateCommand": "uv sync --extra dev",
-
   "customizations": {
     "vscode": {
       "extensions": [
         "anthropic.claude-code",
-        "charliermarsh.ruff",
         "github.copilot"
       ],
-      "settings": {
-        "editor.formatOnSave": true,
-        "[python]": {
-          "editor.defaultFormatter": "charliermarsh.ruff"
-        }
-      }
     }
   },
-
   "forwardPorts": [
     5000
   ]
