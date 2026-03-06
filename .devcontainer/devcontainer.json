@@ -13,10 +13,9 @@
     "context": ".."
   },
   "runArgs": [
-    "--gpus",
-    "all",
-    "--env-file",
-    "${localEnv:HOME}/.hftoken"
+    "--gpus", "all",
+    "--env-file", "${localEnv:HOME}/.hftoken",
+    "--env-file", "${localEnv:HOME}/.ghtoken"
   ],
   "remoteUser": "devel",
   // Mount the active directory (worktree or main repo) at a static path.
@@ -42,7 +41,7 @@
       "extensions": [
         "anthropic.claude-code",
         "github.copilot"
-      ],
+      ]
     }
   },
   "forwardPorts": [
