@@ -23,11 +23,11 @@ args = parser.parse_args()
 
 if args.run_id is None:
     print(f"Available runs in {BUCKET}:\n")
-    run(["gsutil", "ls", f"{BUCKET}/"], check=False)
+    run(["gcloud", "storage", "ls", f"{BUCKET}/"], check=False)
 else:
     dest = Path(args.dest) / args.run_id
     dest.mkdir(parents=True, exist_ok=True)
     source = f"{BUCKET}/sweep-{args.run_id}/"
     print(f"Pulling {source} -> {dest}/")
-    run(["gsutil", "-m", "rsync", "-r", source, str(dest)])
+    run(["gcloud", "storage", "rsync", source, str(dest), "--recursive"])
     print(f"Done. Results in {dest}/")

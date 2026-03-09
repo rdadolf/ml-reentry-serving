@@ -55,7 +55,7 @@ docker run --rm \
 
 # ── Upload results ────────────────────────────────────────────────────
 echo "--- Uploading results ---"
-gsutil -m rsync -r "$RESULTS_DIR" "$BUCKET/sweep-$RUN_ID/"
+gcloud storage rsync "$RESULTS_DIR" "$BUCKET/sweep-$RUN_ID/" --recursive
 echo "Results uploaded to $BUCKET/sweep-$RUN_ID/"
 
 # ── Cleanup ───────────────────────────────────────────────────────────
