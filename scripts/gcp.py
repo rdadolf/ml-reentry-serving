@@ -24,8 +24,8 @@ CPU_MACHINE_TYPE = "e2-medium"
 GPU_MACHINE_TYPE = "a2-highgpu-1g"  # A100 40GB
 
 # ── VM image ──────────────────────────────────────────────────────────
-# Deep Learning VM with CUDA drivers, Docker, and nvidia-container-toolkit
-# pre-installed.
+# Deep Learning VM with CUDA drivers and NVIDIA toolkit pre-installed.
+# Docker is NOT included — vm_setup.sh installs it.
 
 VM_IMAGE_FAMILY = "common-cu128-ubuntu-2204-nvidia-570"
 VM_IMAGE_PROJECT = "deeplearning-platform-release"

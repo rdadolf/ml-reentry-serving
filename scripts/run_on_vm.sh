@@ -28,7 +28,7 @@ mkdir -p "$RESULTS_DIR/mlflow"
 
 # ── Run sweep ─────────────────────────────────────────────────────────
 echo "--- Running sweep ---"
-docker run --rm \
+sudo docker run --rm \
     --gpus all \
     -v "$REPO_DIR:/x/workspace" \
     -v "$RESULTS_DIR:/results" \
