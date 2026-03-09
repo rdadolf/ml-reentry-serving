@@ -65,6 +65,11 @@ def parse_args():
         default=ZONE,
         help=f"GCP zone (default: {ZONE})",
     )
+    parser.add_argument(
+        "--git-force",
+        action="store_true",
+        help="Skip the clean-git check (allow uncommitted changes)",
+    )
     return parser.parse_args()
 
 
@@ -127,8 +132,8 @@ def main():
     args = parse_args()
 
     # ── Validate ──────────────────────────────────────────────────────
-    if not git_is_clean():
-        sys.exit("ERROR: Uncommitted changes. Commit or stash before launching.")
+    if not args.git_force and not git_is_clean():
+        sys.exit("ERROR: Uncommitted changes. Commit or stash, or use --git-force.")
 
     branch, commit, remote_url = git_info()
     gh_token = require_env("GH_TOKEN", "~/.ghtoken")
