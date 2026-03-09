@@ -12,7 +12,7 @@ from pathlib import Path
 # ── GCP project settings ──────────────────────────────────────────────
 
 PROJECT = "research-489502"
-ZONE = "us-west1-c"
+ZONE = "us-west1-b"  # A100 40GB only available in us-west1-b
 BUCKET = "gs://research-489502-reentry-vllm"
 VM_NAME_PREFIX = "reentry-vllm-sweep"
 
@@ -25,7 +25,7 @@ GPU_MACHINE_TYPE = "a2-highgpu-1g"  # A100 40GB
 # Deep Learning VM with CUDA drivers, Docker, and nvidia-container-toolkit
 # pre-installed.
 
-VM_IMAGE_FAMILY = "common-cu124-debian-11"
+VM_IMAGE_FAMILY = "common-cu128-ubuntu-2204-nvidia-570"
 VM_IMAGE_PROJECT = "deeplearning-platform-release"
 
 BOOT_DISK_SIZE_GB = 200

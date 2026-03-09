@@ -1,7 +1,7 @@
 # ml-reentry-serving
 A learning exercise for ML infrastructure, including inference serving, performance analysis, and workflows.
 
-## Cloud sweep architecture
+## Basic remote architecture
 
 ```
 WSL host                    GCP
@@ -28,7 +28,7 @@ GCP Project: research-489502
 │
 └── Compute Engine
     └── reentry-vllm-sweep-<run-id>
-        ├── Image: Deep Learning VM (common-cu124-debian-11)
+        ├── Image: Deep Learning VM (common-cu128-ubuntu-2204-nvidia-570)
         ├── Machine: e2-medium (test) | a2-highgpu-1g (A100)
         ├── Disk: 200GB boot
         ├── Scopes: storage-rw
