@@ -105,12 +105,12 @@ def main():
     scp_to_vm(name, zone, str(setup_script), "vm_setup.sh")
     ssh_to_vm(name, zone, "chmod +x vm_setup.sh")
 
-    env_vars = " ".join([
-        f"CLONE_URL={shlex.quote(clone_url)}",
-        f"BRANCH={shlex.quote(branch)}",
-        f"COMMIT={shlex.quote(commit)}",
+    exports = " && ".join([
+        f"export CLONE_URL={shlex.quote(clone_url)}",
+        f"export BRANCH={shlex.quote(branch)}",
+        f"export COMMIT={shlex.quote(commit)}",
     ])
-    ssh_to_vm(name, zone, f"{env_vars} ./vm_setup.sh")
+    ssh_to_vm(name, zone, f"{exports} && ./vm_setup.sh", capture=False)
 
     print(f"\nVM {name} is ready (image built).")
 

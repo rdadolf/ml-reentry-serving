@@ -144,12 +144,12 @@ def wait_for_ssh(name: str, zone: str, max_wait: int = 300):
     sys.exit(f"\nERROR: SSH not available on {name} after {max_wait}s.")
 
 
-def ssh_to_vm(name: str, zone: str, command: str, *, check: bool = True):
+def ssh_to_vm(name: str, zone: str, command: str, *, check: bool = True, capture: bool = True):
     """Run a command on the VM via gcloud compute ssh."""
     return gcloud(
         "compute", "ssh", name, f"--zone={zone}",
         f"--command={command}",
-        check=check, capture=True,
+        check=check, capture=capture,
     )
 
 
