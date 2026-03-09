@@ -6,7 +6,9 @@ set -euo pipefail
 mkdir -p "$HOME/.claude/projects"
 for f in /mnt/claude/config/* /mnt/claude/config/.*; do
   name=$(basename "$f")
-  case "$name" in .|..|projects) continue;; esac
+  # settings.json caches the host's PATH; skip it so Claude Code
+  # generates a fresh one with the container's actual environment.
+  case "$name" in .|..|projects|settings.json) continue;; esac
   ln -sfn "$f" "$HOME/.claude/$name"
 done
 
