@@ -5,8 +5,10 @@ zones, bucket names, and common operations in one place.
 """
 
 import os
+import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # ── GCP project settings ──────────────────────────────────────────────
@@ -14,7 +16,7 @@ from pathlib import Path
 PROJECT = "research-489502"
 ZONE = "us-west1-b"  # A100 40GB only available in us-west1-b
 BUCKET = "gs://research-489502-reentry-vllm"
-VM_NAME_PREFIX = "reentry-vllm-sweep"
+VM_NAME_PREFIX = "reentry-vllm"
 
 # ── Machine types ─────────────────────────────────────────────────────
 
@@ -94,6 +96,69 @@ def git_is_clean() -> bool:
     """True if the working tree has no uncommitted changes."""
     result = run(["git", "status", "--porcelain"], capture=True)
     return result.stdout.strip() == ""
+
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+
+
+def generate_vm_name() -> str:
+    """Generate a VM name with a random 3-hex suffix."""
+    suffix = secrets.token_hex(2)[:3]
+    return f"{VM_NAME_PREFIX}-{suffix}"
+
+
+def create_instance(name: str, zone: str, machine_type: str, gpu: bool):
+    """Create a GCP VM."""
+    cmd = [
+        "compute", "instances", "create", name,
+        f"--zone={zone}",
+        f"--machine-type={machine_type}",
+        f"--image-family={VM_IMAGE_FAMILY}",
+        f"--image-project={VM_IMAGE_PROJECT}",
+        f"--boot-disk-size={BOOT_DISK_SIZE_GB}GB",
+        "--scopes=storage-rw,compute-rw",
+        "--metadata=install-nvidia-driver=True",
+    ]
+    if gpu:
+        cmd += ["--accelerator=type=nvidia-tesla-a100,count=1", "--maintenance-policy=TERMINATE"]
+    gcloud(*cmd)
+
+
+def wait_for_ssh(name: str, zone: str, max_wait: int = 300):
+    """Poll until SSH is available on the VM."""
+    print(f"Waiting for SSH on {name}...", end="", flush=True)
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        result = gcloud(
+            "compute", "ssh", name, f"--zone={zone}",
+            "--command=true",
+            "--ssh-flag=-o ConnectTimeout=5",
+            "--ssh-flag=-o StrictHostKeyChecking=no",
+            check=False, capture=True,
+        )
+        if result.returncode == 0:
+            print(" ready.")
+            return
+        print(".", end="", flush=True)
+        time.sleep(10)
+    sys.exit(f"\nERROR: SSH not available on {name} after {max_wait}s.")
+
+
+def ssh_to_vm(name: str, zone: str, command: str, *, check: bool = True):
+    """Run a command on the VM via gcloud compute ssh."""
+    return gcloud(
+        "compute", "ssh", name, f"--zone={zone}",
+        f"--command={command}",
+        check=check, capture=True,
+    )
+
+
+def scp_to_vm(name: str, zone: str, local_path: str, remote_path: str):
+    """Copy a file to the VM."""
+    gcloud(
+        "compute", "scp", local_path, f"{name}:{remote_path}",
+        f"--zone={zone}",
+    )
 
 
 def https_clone_url(remote_url: str, token: str) -> str:
