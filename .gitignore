@@ -1,6 +1,9 @@
 # Context for a bespoke claude devops tool.
 .dev-context
 
+# For now, let's not commit experiment results
+/results/
+
 # VS Code settings (we dynamically change these between worktrees, so we don't want to commit them)
 .vscode/
 

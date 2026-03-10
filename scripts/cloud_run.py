@@ -44,6 +44,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run a sweep on an existing GCP VM.")
     parser.add_argument("name", help="VM name")
     parser.add_argument("--zone", default=ZONE, help=f"GCP zone (default: {ZONE})")
+    parser.add_argument("--wait", action="store_true", help="Run in foreground, streaming output")
     parser.add_argument("--cleanup", action="store_true", help="Stop VM after sweep")
     parser.add_argument("--delete", action="store_true", help="Delete VM after sweep (implies --cleanup)")
     args = parser.parse_args(argv)
@@ -110,20 +111,36 @@ def main():
     ])
     cmd = f"{env_vars} ./run_on_vm.sh {sweep_args}"
 
-    # Launch detached via nohup
-    ssh_to_vm(
-        args.name, args.zone,
-        f"nohup bash -c '{cmd} > run.log 2>&1' &",
-    )
+    if args.wait:
+        # Run in foreground, streaming output
+        print("Running sweep (foreground)...\n")
+        result = ssh_to_vm(
+            args.name, args.zone,
+            f"bash -c '{cmd}'",
+            check=False, capture=False,
+        )
+        if result.returncode != 0:
+            print(f"\nSweep FAILED (exit code {result.returncode}).")
+            sys.exit(1)
+        print(f"\nSweep {run_id} completed on {args.name}.")
+    else:
+        # Launch detached — redirect nohup output and disown so SSH returns
+        ssh_to_vm(
+            args.name, args.zone,
+            f"nohup bash -c '{cmd} > run.log 2>&1' > /dev/null 2>&1 & disown",
+        )
+        print(f"Sweep {run_id} launched on {args.name} (detached).")
 
-    print(f"Sweep {run_id} launched on {args.name} (detached).")
-    print(f"\nMonitor:")
-    print(f"  gcloud compute ssh {args.name} --zone={args.zone} --project={PROJECT} --command='tail -f run.log'")
+    print(f"\nCheck status:")
+    print(f"  python3 scripts/cloud_status.py")
     print(f"\nPull results:")
-    print(f"  python scripts/pull_results.py --run-id {run_id}")
+    print(f"  python3 scripts/pull_results.py --run-id {run_id}")
+    if not args.wait:
+        print(f"\nMonitor:")
+        print(f"  gcloud compute ssh {args.name} --zone={args.zone} --project={PROJECT} --command='tail -f run.log'")
     if after_run == "none":
         print(f"\nCleanup:")
-        print(f"  python scripts/cloud_cleanup.py {args.name}")
+        print(f"  python3 scripts/cloud_cleanup.py {args.name}")
 
 
 if __name__ == "__main__":

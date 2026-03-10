@@ -8,6 +8,7 @@
 #   CLONE_URL  — HTTPS clone URL with embedded token
 #   BRANCH     — Git branch to check out
 #   COMMIT     — Exact commit SHA to pin
+#   IMAGE_TAG  — Full Artifact Registry image:tag to pull
 set -euo pipefail
 
 echo "=== vm_setup.sh ==="
@@ -30,9 +31,12 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq docker.io
 sudo usermod -aG docker "$USER"
 
-# ── Build container ───────────────────────────────────────────────────
-echo "--- Building container ---"
-sudo docker build -f .devcontainer/Dockerfile -t sweep:latest .
+# ── Pull container image ─────────────────────────────────────────────
+echo "--- Pulling container image ---"
+echo "Image: $IMAGE_TAG"
+gcloud auth configure-docker "$(echo "$IMAGE_TAG" | cut -d/ -f1)" --quiet
+sudo docker pull "$IMAGE_TAG"
+sudo docker tag "$IMAGE_TAG" sweep:latest
 
 echo "=== Setup complete ==="
 date

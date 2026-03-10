@@ -18,6 +18,8 @@ from pathlib import Path
 import mlflow
 import yaml
 
+from experiment_progress import ExperimentProgress
+
 
 def load_config(path: str) -> dict:
     with open(path) as f:
@@ -54,6 +56,11 @@ def main():
         default=str(default_config),
         help="Path to sweep config YAML",
     )
+    parser.add_argument(
+        "--progress",
+        default=None,
+        help="Path to write progress JSON (for monitoring)",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -69,7 +76,7 @@ def main():
     mlflow.set_experiment("vllm-sweeps")
     print(f"Running {len(grid)} parameter combinations...")
 
-    for i, params in enumerate(grid, 1):
+    for i, params in enumerate(ExperimentProgress.track(grid, path=args.progress), 1):
         print(f"[{i}/{len(grid)}]", end="")
         run_single(model, quantization, params)
 

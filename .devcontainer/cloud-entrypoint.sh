@@ -7,5 +7,5 @@
 set -euo pipefail
 
 cd /x/workspace
-uv sync --extra dev
+uv sync --extra dev --quiet
 exec python exp/vllm-sweeps/run-sweep.py "$@"

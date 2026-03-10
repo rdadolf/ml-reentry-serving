@@ -35,7 +35,7 @@ RUN usermod -l devel -d /home/devel -m ubuntu \
 # UV_PROJECT_ENVIRONMENT persists, so postCreateCommand's `uv sync` is a no-op.
 ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
 WORKDIR /x/workspace
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 RUN uv sync --extra dev \
     && chown -R devel:devel /opt/venv
 

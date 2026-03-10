@@ -20,7 +20,9 @@ from gcp import (
     BUCKET,
     CPU_MACHINE_TYPE,
     GPU_MACHINE_TYPE,
+    IMAGE,
     PROJECT,
+    REGISTRY_LOCATION,
     SCRIPTS_DIR,
     VM_IMAGE_FAMILY,
     VM_NAME_PREFIX,
@@ -28,9 +30,12 @@ from gcp import (
     check_not_in_docker,
     create_instance,
     generate_vm_name,
+    gcloud,
     git_info,
     git_is_clean,
     https_clone_url,
+    image_content_hash,
+    image_tag,
     require_env,
     scp_to_vm,
     ssh_to_vm,
@@ -74,6 +79,23 @@ def main():
     if not args.git_force and not git_is_clean():
         sys.exit("ERROR: Uncommitted changes. Commit or stash, or use --git-force.")
 
+    # Check that the container image has been pushed for the current file state
+    expected_tag = image_content_hash()
+    full_image_tag = image_tag()
+    result = gcloud(
+        "artifacts", "docker", "tags", "list",
+        f"{IMAGE}",
+        f"--filter=tag={expected_tag}",
+        "--format=value(tag)",
+        check=False, capture=True,
+    )
+    if expected_tag not in (result.stdout or ""):
+        sys.exit(
+            f"ERROR: No image in Artifact Registry for current file state (tag {expected_tag}).\n"
+            f"Run: python scripts/cloud_push_image.py"
+        )
+    print(f"Image tag {expected_tag} found in registry.")
+
     branch, commit, remote_url = git_info()
     gh_token = require_env("GH_TOKEN", "~/.ghtoken")
     hf_token = require_env("HF_TOKEN", "~/.hftoken")
@@ -90,6 +112,7 @@ def main():
     print(f"  VM:           {name}")
     print(f"  Machine type: {machine_type}")
     print(f"  GPU:          {'yes' if args.gpu else 'no (CPU test)'}")
+    print(f"  Image:        {full_image_tag}")
     print(f"  Bucket:       {BUCKET}")
     if args.run:
         after = "delete" if args.delete else ("stop" if args.cleanup else "none")
@@ -109,6 +132,7 @@ def main():
         f"export CLONE_URL={shlex.quote(clone_url)}",
         f"export BRANCH={shlex.quote(branch)}",
         f"export COMMIT={shlex.quote(commit)}",
+        f"export IMAGE_TAG={shlex.quote(full_image_tag)}",
     ])
     ssh_to_vm(name, zone, f"{exports} && ./vm_setup.sh", capture=False)
 

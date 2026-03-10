@@ -4,6 +4,7 @@ All scripts that interact with GCP import from here to keep project IDs,
 zones, bucket names, and common operations in one place.
 """
 
+import hashlib
 import os
 import secrets
 import subprocess
@@ -31,6 +32,36 @@ VM_IMAGE_FAMILY = "common-cu128-ubuntu-2204-nvidia-570"
 VM_IMAGE_PROJECT = "deeplearning-platform-release"
 
 BOOT_DISK_SIZE_GB = 200
+
+# ── Artifact Registry ────────────────────────────────────────────────
+
+REGISTRY_LOCATION = "us-west1"
+REGISTRY_REPO = "reentry-vllm"
+REGISTRY = f"{REGISTRY_LOCATION}-docker.pkg.dev/{PROJECT}/{REGISTRY_REPO}"
+IMAGE_NAME = "sweep"
+IMAGE = f"{REGISTRY}/{IMAGE_NAME}"
+
+# Files whose contents determine the container image tag.
+# If you add a file that is COPYed into the Dockerfile, add it here.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+IMAGE_HASH_FILES = [
+    REPO_ROOT / ".devcontainer" / "Dockerfile",
+    REPO_ROOT / "pyproject.toml",
+    REPO_ROOT / "uv.lock",
+]
+
+
+def image_content_hash() -> str:
+    """Compute a short hash over the files that affect the container image."""
+    h = hashlib.sha256()
+    for p in sorted(IMAGE_HASH_FILES):
+        h.update(p.read_bytes())
+    return h.hexdigest()[:12]
+
+
+def image_tag() -> str:
+    """Return the full image:tag string for the current file contents."""
+    return f"{IMAGE}:{image_content_hash()}"
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
