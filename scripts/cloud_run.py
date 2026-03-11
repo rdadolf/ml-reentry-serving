@@ -93,9 +93,8 @@ def main():
     print(f"{'='*60}\n")
 
     # Upload the run script
-    runner_script = SCRIPTS_DIR / "run_on_vm.sh"
-    scp_to_vm(args.name, args.zone, str(runner_script), "run_on_vm.sh")
-    ssh_to_vm(args.name, args.zone, "chmod +x run_on_vm.sh")
+    runner_script = SCRIPTS_DIR / "run_on_vm.py"
+    scp_to_vm(args.name, args.zone, str(runner_script), "run_on_vm.py")
 
     # Build the env + command
     sweep_args = " ".join(shlex.quote(a) for a in passthrough)
@@ -109,7 +108,7 @@ def main():
         f"PROJECT={shlex.quote(PROJECT)}",
         f"VM_ZONE={shlex.quote(args.zone)}",
     ])
-    cmd = f"{env_vars} ./run_on_vm.sh {sweep_args}"
+    cmd = f"{env_vars} python3 ./run_on_vm.py {sweep_args}"
 
     if args.wait:
         # Run in foreground, streaming output
