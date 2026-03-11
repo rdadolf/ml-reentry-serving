@@ -21,7 +21,7 @@ VM_NAME_PREFIX = "reentry-vllm"
 
 # ── Machine types ─────────────────────────────────────────────────────
 
-CPU_MACHINE_TYPE = "n2-standard-16"
+CPU_MACHINE_TYPE = "n2-standard-8"
 GPU_MACHINE_TYPE = "a2-highgpu-1g"  # A100 40GB
 
 # ── VM image ──────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ VM_IMAGE_PROJECT = "deeplearning-platform-release"
 BOOT_DISK_SIZE_GB = 200
 
 # ── Docker cache disk ────────────────────────────────────────────────
-DOCKER_CACHE_DISK = "reentry-docker-cache"
+DOCKER_CACHE_DISK = "reentry-vllm-docker"
 
 # ── Artifact Registry ────────────────────────────────────────────────
 
