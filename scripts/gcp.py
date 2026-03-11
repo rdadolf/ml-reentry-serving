@@ -15,14 +15,16 @@ from pathlib import Path
 # ── GCP project settings ──────────────────────────────────────────────
 
 PROJECT = "research-489502"
-ZONE = "us-west1-b"  # A100 40GB only available in us-west1-b
+ZONE = "us-west1-a"
 BUCKET = "gs://research-489502-reentry-vllm"
 VM_NAME_PREFIX = "reentry-vllm"
 
 # ── Machine types ─────────────────────────────────────────────────────
 
 CPU_MACHINE_TYPE = "n2-standard-8"
+# GPU_MACHINE_TYPE = "g2-standard-8"  # L4 24GB
 GPU_MACHINE_TYPE = "a2-highgpu-1g"  # A100 40GB
+GPU_SPOT = True  # Use spot/preemptible instances for GPU VMs
 
 # ── VM image ──────────────────────────────────────────────────────────
 # Deep Learning VM with CUDA drivers and NVIDIA toolkit pre-installed.
@@ -156,7 +158,9 @@ def create_instance(name: str, zone: str, machine_type: str, gpu: bool):
         f"--disk=name={DOCKER_CACHE_DISK},device-name=docker-cache,mode=rw,auto-delete=no",
     ]
     if gpu:
-        cmd += ["--accelerator=type=nvidia-tesla-a100,count=1", "--maintenance-policy=TERMINATE"]
+        cmd += ["--maintenance-policy=TERMINATE"]
+        if GPU_SPOT:
+            cmd += ["--provisioning-model=SPOT"]
     gcloud(*cmd)
 
 
