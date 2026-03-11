@@ -24,18 +24,24 @@
   // Mount the main repo as a sibling so .git relative paths resolve.
   // When opened from the main repo itself, this is the same directory
   // as the workspace mount — harmless.
+  "containerEnv": {
+    "HOST_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
+  },
   "mounts": [
     "source=${localWorkspaceFolder}/../ml-reentry-serving,target=/x/ml-reentry-serving,type=bind",
-    "source=${localEnv:HOME}/.claude,target=/home/devel/.claude,type=bind",
+    "source=${localEnv:HOME}/.claude,target=/mnt/claude/config,type=bind",
+    "source=${localEnv:HOME}/.claude/projects,target=/mnt/claude/projects,type=bind",
     "source=${localEnv:HOME}/.ssh,target=/home/devel/.ssh,type=bind,readonly",
     "source=${localEnv:HOME}/Work/mlflow,target=/home/devel/mlflow,type=bind"
   ],
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
+  "initializeCommand": "mkdir -p \"$HOME/.claude/projects/$(echo \"$PWD\" | tr '/' '-')\"",
   // Custom Dockerfiles should set ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
   // and run `uv sync` at build time so this becomes a no-op.
   "postCreateCommand": "uv sync --extra dev",
+  "postStartCommand": ".devcontainer/setup-claude.sh",
   "customizations": {
     "vscode": {
       "extensions": [

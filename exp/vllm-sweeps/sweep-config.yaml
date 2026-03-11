@@ -1,0 +1,11 @@
+# Sweep parameter grid.
+#
+# run-sweep.py reads this file and iterates over all combinations.
+# Add or remove parameters as needed.
+
+model: "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+quantization: "awq_marlin"
+
+sweep:
+  max_model_len: [2048, 4096]
+  gpu_memory_utilization: [0.85, 0.90, 0.95]
