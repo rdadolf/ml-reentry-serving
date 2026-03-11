@@ -21,7 +21,7 @@ VM_NAME_PREFIX = "reentry-vllm"
 
 # ── Machine types ─────────────────────────────────────────────────────
 
-CPU_MACHINE_TYPE = "e2-medium"
+CPU_MACHINE_TYPE = "n2-standard-16"
 GPU_MACHINE_TYPE = "a2-highgpu-1g"  # A100 40GB
 
 # ── VM image ──────────────────────────────────────────────────────────
@@ -32,6 +32,9 @@ VM_IMAGE_FAMILY = "common-cu128-ubuntu-2204-nvidia-570"
 VM_IMAGE_PROJECT = "deeplearning-platform-release"
 
 BOOT_DISK_SIZE_GB = 200
+
+# ── Docker cache disk ────────────────────────────────────────────────
+DOCKER_CACHE_DISK = "reentry-docker-cache"
 
 # ── Artifact Registry ────────────────────────────────────────────────
 
@@ -149,6 +152,8 @@ def create_instance(name: str, zone: str, machine_type: str, gpu: bool):
         f"--boot-disk-size={BOOT_DISK_SIZE_GB}GB",
         "--scopes=storage-rw,compute-rw",
         "--metadata=install-nvidia-driver=True",
+        # Attach the persistent Docker cache disk (survives VM deletion)
+        f"--disk=name={DOCKER_CACHE_DISK},device-name=docker-cache,mode=rw,auto-delete=no",
     ]
     if gpu:
         cmd += ["--accelerator=type=nvidia-tesla-a100,count=1", "--maintenance-policy=TERMINATE"]

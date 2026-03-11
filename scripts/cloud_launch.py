@@ -85,7 +85,6 @@ def main():
     result = gcloud(
         "artifacts", "docker", "tags", "list",
         f"{IMAGE}",
-        f"--filter=tag={expected_tag}",
         "--format=value(tag)",
         check=False, capture=True,
     )
