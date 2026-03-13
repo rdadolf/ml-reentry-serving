@@ -34,6 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 \
         python3.12-venv \
         python3.12-dev \
+        clang \
+        lldb \
+        lld \
+        clang-format \
+        clang-tidy \
+        make \
+        cmake \
         git \
         curl \
         ssh \
@@ -42,6 +49,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+
+ENV CC=clang
+ENV CXX=clang++
 
 # uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv

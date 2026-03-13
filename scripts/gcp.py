@@ -15,15 +15,15 @@ from pathlib import Path
 # ── GCP project settings ──────────────────────────────────────────────
 
 PROJECT = "research-489502"
-ZONE = "us-west1-a"
+ZONE = "us-west1-b"
 BUCKET = "gs://research-489502-reentry-vllm"
 VM_NAME_PREFIX = "reentry-vllm"
 
 # ── Machine types ─────────────────────────────────────────────────────
 
 CPU_MACHINE_TYPE = "n2-standard-8"
-# GPU_MACHINE_TYPE = "g2-standard-8"  # L4 24GB
-GPU_MACHINE_TYPE = "a2-highgpu-1g"  # A100 40GB
+GPU_MACHINE_TYPE = "g2-standard-8"  # L4 24GB
+#GPU_MACHINE_TYPE = "a2-highgpu-1g"  # A100 40GB
 GPU_SPOT = True  # Use spot/preemptible instances for GPU VMs
 
 # ── VM image ──────────────────────────────────────────────────────────
