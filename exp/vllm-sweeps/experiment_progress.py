@@ -94,3 +94,21 @@ class ExperimentProgress:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    @classmethod
+    def load_completed(cls, path: str | Path) -> int:
+        """Read completed count from an existing progress file."""
+        p = Path(path)
+        if not p.exists():
+            return 0
+        try:
+            data = json.loads(p.read_text())
+            return data.get("completed", 0)
+        except (json.JSONDecodeError, OSError):
+            return 0
+
+    @classmethod
+    def set_completed(cls, n: int):
+        """Set the completed count (e.g. when resuming)."""
+        cls._completed = n
+        cls._write()

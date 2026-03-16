@@ -5,16 +5,17 @@ This script is environment-agnostic: it reads MLflow configuration from
 environment variables (MLFLOW_TRACKING_URI, MLFLOW_DEFAULT_ARTIFACT_ROOT)
 and works identically in the local devcontainer and on a cloud VM.
 
-The sweep iterates over server configs (sorted by increasing memory pressure)
-and, within each, over valid workload combos (banded by max_model_len so that
-input_len + output_len < max_model_len).  Workload combos that fit under a
-smaller max_model_len are assigned there, not duplicated at larger values.
+The parameter space is a banded grid: each (input_len, output_len) pair is
+assigned to the smallest max_model_len that fits it. Iterate over vLLM server
+parameters first to avoid excessive server restarts. ParameterSpace iterates
+the space without materializing the grid, and supports index-based lookup
+for progress tracking and resume.
 
 Server params that cause OOM at startup trigger short-circuiting: all
 remaining combos with strictly higher memory pressure are skipped.
 
-Progress is saved as (server_idx, workload_idx) so the sweep can be
-interrupted and resumed from where it left off.
+Progress is tracked as a scalar completed count via ExperimentProgress.
+The deterministic iteration order means resume just skips the first N entries.
 
 Usage:
     python exp/vllm-sweeps/run-sweep.py
@@ -36,9 +37,11 @@ from pathlib import Path
 import mlflow
 import yaml
 
+from experiment_progress import ExperimentProgress
+
 
 # ---------------------------------------------------------------------------
-# Config parsing & grid construction
+# Config parsing
 # ---------------------------------------------------------------------------
 
 def load_config(path: str) -> dict:
@@ -46,55 +49,98 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def expand_grid(section: dict) -> list[dict]:
-    """Expand a config section into a list of param dicts (cartesian product).
+# ---------------------------------------------------------------------------
+# Parameter space
+# ---------------------------------------------------------------------------
 
-    Scalar values are treated as single-element lists.
-    """
-    keys = list(section.keys())
-    values = [v if isinstance(v, list) else [v] for v in section.values()]
-    return [dict(zip(keys, combo)) for combo in itertools.product(*values)]
+class ParameterSpace:
+    """Banded parameter space with deterministic iteration order.
 
+    Iteration order (outer to inner):
+        quantization → gpu_memory_utilization → max_model_len →
+        (input_len, output_len) band pairs → concurrency
 
-def build_banded_schedule(server_combos: list[dict],
-                          workload_combos: list[dict],
-                          ) -> list[tuple[dict, list[dict]]]:
-    """Assign workload combos to server configs via max_model_len banding.
-
+    Sorted by increasing memory pressure so OOM short-circuiting is effective.
     Each (input_len, output_len) pair is assigned to the smallest
-    max_model_len that can accommodate it.  Workloads are not duplicated
-    across bands.
+    max_model_len band where input_len + output_len < max_model_len.
 
-    Returns a list of (server_params, workloads) pairs, sorted by increasing
-    memory pressure within server configs.
+    All swept parameters must be lists in the config.
     """
-    # Collect sorted max_model_len values from the server combos
-    max_lens = sorted({c["max_model_len"] for c in server_combos})
 
-    # Assign each (input_len, output_len) pair to its smallest valid band
-    pair_to_band: dict[tuple[int, int], int] = {}
-    for w in workload_combos:
-        pair = (w["input_len"], w["output_len"])
-        if pair in pair_to_band:
-            continue
-        total = pair[0] + pair[1]
-        for ml in max_lens:
-            if total < ml:
-                pair_to_band[pair] = ml
-                break
-        # If no band fits, the pair is invalid and will be omitted
+    SERVER_KEYS = {"quantization", "gpu_memory_utilization", "max_model_len"}
 
-    # Build per-server-config workload lists
-    schedule = []
-    for sc in server_combos:
-        ml = sc["max_model_len"]
-        valid_workloads = [
-            w for w in workload_combos
-            if pair_to_band.get((w["input_len"], w["output_len"])) == ml
+    def __init__(self, config: dict):
+        server = config.get("server", {})
+        workload = config.get("workload", {})
+        self.checkpoints = config.get("checkpoints", {})
+        self.model_base = config["model"]
+
+        self.quantizations = sorted(server["quantization"])
+        self.gpu_mem_utils = sorted(server["gpu_memory_utilization"])
+        self.max_model_lens = sorted(server["max_model_len"])
+        self.concurrencies = sorted(workload["concurrency"])
+
+        input_lens = sorted(workload["input_len"])
+        output_lens = sorted(workload["output_len"])
+
+        self.num_prompts = workload.get("num_prompts", 100)
+        self.num_warmups = workload.get("num_warmups", 5)
+
+        # Band assignment: each (input_len, output_len) pair goes to the
+        # smallest max_model_len where input_len + output_len < max_model_len.
+        self.band_pairs: list[list[tuple[int, int]]] = [
+            [] for _ in self.max_model_lens
         ]
-        schedule.append((sc, valid_workloads))
+        for input_len in input_lens:
+            for output_len in output_lens:
+                for band_index, max_len in enumerate(self.max_model_lens):
+                    if input_len + output_len < max_len:
+                        self.band_pairs[band_index].append(
+                            (input_len, output_len))
+                        break
 
-    return schedule
+        self.workloads_per_band = [
+            len(pairs) * len(self.concurrencies)
+            for pairs in self.band_pairs
+        ]
+        self.workloads_per_gpu_mem = sum(self.workloads_per_band)
+        self._total = (
+            len(self.quantizations)
+            * len(self.gpu_mem_utils)
+            * self.workloads_per_gpu_mem
+        )
+
+    def __len__(self) -> int:
+        return self._total
+
+    def server_config(self, params: dict) -> dict:
+        """Extract server-side params (those requiring a restart)."""
+        return {k: v for k, v in params.items() if k in self.SERVER_KEYS}
+
+    def workload_config(self, params: dict) -> dict:
+        """Extract workload-side params (those that don't need restart)."""
+        return {k: v for k, v in params.items() if k not in self.SERVER_KEYS}
+
+    def model_path(self, params: dict) -> str:
+        """Resolve quantization to HF checkpoint path."""
+        return self.checkpoints.get(params["quantization"], self.model_base)
+
+    def __iter__(self):
+        for quantization in self.quantizations:
+            for gpu_mem in self.gpu_mem_utils:
+                for band_index, max_len in enumerate(self.max_model_lens):
+                    for input_len, output_len in self.band_pairs[band_index]:
+                        for concurrency in self.concurrencies:
+                            yield {
+                                "quantization": quantization,
+                                "gpu_memory_utilization": gpu_mem,
+                                "max_model_len": max_len,
+                                "input_len": input_len,
+                                "output_len": output_len,
+                                "concurrency": concurrency,
+                                "num_prompts": self.num_prompts,
+                                "num_warmups": self.num_warmups,
+                            }
 
 
 # Memory-pressure params: sorted so low pressure comes first, enabling
@@ -103,49 +149,11 @@ def build_banded_schedule(server_combos: list[dict],
 MEMORY_PRESSURE_KEYS = ("gpu_memory_utilization", "max_model_len")
 
 
-def memory_pressure_sort_key(combo: dict) -> tuple:
-    """Sort key: increasing memory pressure."""
-    return tuple(combo.get(k, 0) for k in MEMORY_PRESSURE_KEYS)
-
-
 def is_strictly_higher_pressure(failed: dict, candidate: dict) -> bool:
     """True if candidate has >= pressure on ALL memory axes vs failed."""
     return all(
         candidate.get(k, 0) >= failed.get(k, 0) for k in MEMORY_PRESSURE_KEYS
     )
-
-
-# ---------------------------------------------------------------------------
-# Progress / pause-resume
-# ---------------------------------------------------------------------------
-
-def load_progress(path: str | None) -> tuple[int, int]:
-    """Load (server_idx, workload_idx) from progress file, or (0, 0)."""
-    if path is None:
-        return 0, 0
-    p = Path(path)
-    if not p.exists():
-        return 0, 0
-    try:
-        data = json.loads(p.read_text())
-        return data.get("server_idx", 0), data.get("workload_idx", 0)
-    except (json.JSONDecodeError, OSError):
-        return 0, 0
-
-
-def save_progress(path: str | None, server_idx: int, workload_idx: int,
-                  total: int):
-    """Atomically write progress state."""
-    if path is None:
-        return
-    data = {"server_idx": server_idx, "workload_idx": workload_idx,
-            "total": total}
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-    try:
-        os.write(fd, json.dumps(data).encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -340,34 +348,23 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
-    model_base = config["model"]
-    checkpoints = config.get("checkpoints", {})
-    server_section = config.get("server", {})
-    workload_section = config.get("workload", {})
     bench_config = config.get("bench", {})
     serve_config = config.get("serve", {})
 
-    server_combos = expand_grid(server_section)
-    workload_combos = expand_grid(workload_section)
-
-    # Sort server combos by increasing memory pressure for OOM short-circuiting
-    server_combos.sort(key=memory_pressure_sort_key)
-
-    # Build banded schedule: each server config gets only the workload combos
-    # whose (input_len + output_len) fits under its max_model_len band
-    schedule = build_banded_schedule(server_combos, workload_combos)
-
-    total_runs = sum(len(wl) for _, wl in schedule)
+    sweep = ParameterSpace(config)
+    total = len(sweep)
 
     mlflow.set_experiment("vllm-sweeps")
 
-    # Resume support: skip past already-completed work
-    resume_server_idx, resume_workload_idx = load_progress(args.progress)
-    if resume_server_idx > 0 or resume_workload_idx > 0:
-        print(f"Resuming from server_idx={resume_server_idx}, "
-              f"workload_idx={resume_workload_idx}")
+    completed = 0
+    if args.progress:
+        completed = ExperimentProgress.load_completed(args.progress)
+    if completed > 0:
+        print(f"Resuming from {completed}/{total}")
+    ExperimentProgress.init(total, args.progress)
+    ExperimentProgress.set_completed(completed)
 
-    print(f"Sweep: {len(schedule)} server configs, {total_runs} total runs")
+    print(f"Sweep: {total} total runs")
 
     server = VllmServer(
         host=serve_config.get("host", "127.0.0.1"),
@@ -375,90 +372,67 @@ def main():
         startup_timeout=serve_config.get("startup_timeout", 300),
     )
 
-    # Track OOM'd server combos for short-circuiting
     oom_combos: list[dict] = []
+    prev_server_config: dict | None = None
 
-    for si, (server_params, valid_workloads) in enumerate(schedule):
-        if si < resume_server_idx:
-            continue
+    for params in itertools.islice(sweep, completed, None):
+        server_params = sweep.server_config(params)
+        workload_params = sweep.workload_config(params)
+        model_path = sweep.model_path(params)
 
-        quant = server_params.get("quantization", "")
-        model_path = checkpoints.get(quant, model_base)
-
-        if not valid_workloads:
-            continue
-
-        # Short-circuit: skip if any prior OOM has strictly lower pressure
+        # Short-circuit: skip if higher pressure than a prior OOM
         if any(is_strictly_higher_pressure(oom, server_params)
                for oom in oom_combos):
-            print(f"\n[skip] Server config {server_params} — "
-                  f"higher pressure than a prior OOM")
-            for wi, wp in enumerate(valid_workloads):
-                log_run(model_path, server_params, wp,
-                        error="Skipped: higher memory pressure than prior OOM")
-                save_progress(args.progress, si, wi + 1, total_runs)
+            log_run(model_path, server_params, workload_params,
+                    error="Skipped: higher memory pressure than prior OOM")
+            ExperimentProgress.step()
             continue
 
-        # Server CLI params: quantization is passed explicitly for kernel
-        # selection; it is not filtered out.
-        serve_params = {k: v for k, v in server_params.items()}
-
-        print(f"\n[server {si + 1}/{len(schedule)}] {server_params} "
-              f"({len(valid_workloads)} workloads)")
-
-        server.stop()
-        healthy, msg = server.start(model_path, serve_params)
-
-        if not healthy:
-            print(f"  Server startup failed: {msg[:200]}")
-            oom_combos.append(server_params)
-            for wi, wp in enumerate(valid_workloads):
-                if si == resume_server_idx and wi < resume_workload_idx:
-                    continue
-                log_run(model_path, server_params, wp,
+        # Restart server if config changed
+        if server_params != prev_server_config:
+            server.stop()
+            print(f"\n[server] {server_params}")
+            healthy, msg = server.start(model_path, server_params)
+            if not healthy:
+                print(f"  Server startup failed: {msg[:200]}")
+                oom_combos.append(server_params)
+                log_run(model_path, server_params, workload_params,
                         error=f"Server startup failed: {msg[:200]}")
-                save_progress(args.progress, si, wi + 1, total_runs)
+                ExperimentProgress.step()
+                prev_server_config = server_params
+                continue
+            prev_server_config = server_params
+
+        # Check server health before each benchmark
+        if not server.is_alive():
+            print("  Server crashed — attempting restart")
+            log_run(model_path, server_params, workload_params,
+                    error="Server crashed during benchmark")
+            ExperimentProgress.step()
+            server.stop()
+            healthy, msg = server.start(model_path, server_params)
+            if not healthy:
+                oom_combos.append(server_params)
+            prev_server_config = server_params
             continue
 
-        for wi, workload_params in enumerate(valid_workloads):
-            if si == resume_server_idx and wi < resume_workload_idx:
-                continue
+        with tempfile.TemporaryDirectory(prefix="bench_") as tmpdir:
+            result = run_benchmark(
+                server.base_url, model_path, workload_params,
+                bench_config, Path(tmpdir),
+            )
 
-            if not server.is_alive():
-                print("  Server crashed — attempting restart")
-                log_run(model_path, server_params, workload_params,
-                        error="Server crashed during benchmark")
-                save_progress(args.progress, si, wi + 1, total_runs)
+        if result is None:
+            log_run(model_path, server_params, workload_params,
+                    error="Benchmark client failed")
+        else:
+            metrics = extract_metrics(result)
+            log_run(model_path, server_params, workload_params,
+                    metrics=metrics)
+            print(f"  → throughput={metrics.get('request_throughput', '?'):.2f} req/s "
+                  f"ttft={metrics.get('mean_ttft_ms', '?'):.1f}ms")
 
-                server.stop()
-                healthy, msg = server.start(model_path, serve_params)
-                if not healthy:
-                    print(f"  Restart failed: {msg[:200]}")
-                    for wp in valid_workloads[wi + 1:]:
-                        log_run(model_path, server_params, wp,
-                                error=f"Server restart failed: {msg[:200]}")
-                    save_progress(args.progress, si, len(valid_workloads),
-                                  total_runs)
-                    break
-                continue
-
-            with tempfile.TemporaryDirectory(prefix="bench_") as tmpdir:
-                result = run_benchmark(
-                    server.base_url, model_path, workload_params,
-                    bench_config, Path(tmpdir),
-                )
-
-            if result is None:
-                log_run(model_path, server_params, workload_params,
-                        error="Benchmark client failed")
-            else:
-                metrics = extract_metrics(result)
-                log_run(model_path, server_params, workload_params,
-                        metrics=metrics)
-                print(f"  → throughput={metrics.get('request_throughput', '?'):.2f} req/s "
-                      f"ttft={metrics.get('mean_ttft_ms', '?'):.1f}ms")
-
-            save_progress(args.progress, si, wi + 1, total_runs)
+        ExperimentProgress.step()
 
     server.stop()
     print("Sweep complete.")
