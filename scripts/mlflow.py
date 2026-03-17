@@ -191,10 +191,12 @@ def cmd_create(new_credentials: bool = False):
     wait_for_ssh(MLFLOW_VM_NAME, ZONE)
 
     # Install MLflow on the VM in a venv
-    print("Installing MLflow on VM...")
+    print("Installing system packages...")
     ssh_to_vm(MLFLOW_VM_NAME, ZONE,
-              "sudo apt-get update && "
-              "sudo apt-get install -y python3-pip python3-venv python3.10-venv && "
+              "sudo apt-get update -qq && "
+              "sudo apt-get install -y python3-pip python3-venv python3.10-venv")
+    print("Creating venv and installing MLflow...")
+    ssh_to_vm(MLFLOW_VM_NAME, ZONE,
               "python3 -m venv ~/mlflow-venv && "
               "~/mlflow-venv/bin/pip install 'mlflow[auth]'")
 
@@ -236,6 +238,7 @@ ExecStart=/home/{vm_user}/mlflow-venv/bin/mlflow server \
     --backend-store-uri sqlite:////home/{vm_user}/mlflow/mlflow.db \
     --app-name basic-auth \
     --workers 1 \
+    --cors-allowed-origins * \
     --allowed-hosts placeholder
 Restart=on-failure
 RestartSec=5
