@@ -319,7 +319,11 @@ def run_benchmark(base_url: str, model: str, workload: dict,
     print(f"  Benchmark: concurrency={workload['concurrency']} "
           f"input_len={workload['input_len']} output_len={workload['output_len']}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        print("  Benchmark timed out (600s)")
+        return None
 
     if result.returncode != 0:
         print(f"  Benchmark failed (rc={result.returncode}): {result.stderr[-500:]}")
