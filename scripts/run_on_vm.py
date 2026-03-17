@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run on the GCP VM (not inside a container).
 
-Executes a sweep inside the pre-built container and writes status to GCS.
+Executes a sweep inside the pre-built container.
 All experiment data goes directly to the MLflow tracking server.
 
 Expected environment variables (set by cloud_run.py):
@@ -18,14 +18,13 @@ Optional CLI arguments:
     --config PATH   Path to sweep config YAML (inside container)
 """
 
-import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 
@@ -48,7 +47,6 @@ PROJECT = env("PROJECT")
 VM_ZONE = env("VM_ZONE")
 
 REPO_DIR = Path.home() / "repo"
-STATUS_PATH = f"{BUCKET}/{SWEEP_NAME}/status.json"
 GCS_MLFLOW_SERVER = f"{BUCKET}/mlflow-server"
 VM_NAME = socket.gethostname()
 
@@ -66,28 +64,6 @@ def parse_args():
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     print(f"+ {' '.join(cmd)}", flush=True)
     return subprocess.run(cmd, **kwargs)
-
-
-def write_status(status: str, error: str = ""):
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    data = {
-        "status": status,
-        "sweep_name": SWEEP_NAME,
-        "vm": VM_NAME,
-        "branch": BRANCH,
-        "commit": COMMIT,
-        "timestamp": ts,
-    }
-    if error:
-        data["error"] = error
-    try:
-        run(
-            ["gcloud", "storage", "cp", "-", STATUS_PATH],
-            input=json.dumps(data), text=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
 
 
 def has_gpu() -> bool:
@@ -135,8 +111,6 @@ def main():
     mlflow_uri = read_mlflow_uri()
     print(f"MLflow tracking: {mlflow_uri}")
 
-    write_status("running")
-
     # Run sweep in container
     gpu = has_gpu()
     print(f"--- Running sweep ({'GPU' if gpu else 'CPU'}) ---")
@@ -161,16 +135,8 @@ def main():
     result = run(docker_cmd, check=False)
     if result.returncode != 0:
         upload_run_log()
-        error_detail = f"exit code {result.returncode}"
-        log = Path.home() / "run.log"
-        if log.exists():
-            last_line = log.read_text().rstrip().rsplit("\n", 1)[-1]
-            if last_line:
-                error_detail = last_line
-        write_status("failed", error_detail)
         sys.exit(result.returncode)
 
-    write_status("complete")
     print("=== Sweep complete ===")
     print(datetime.now())
 
@@ -195,5 +161,4 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         upload_run_log()
-        write_status("failed", str(exc))
         raise
