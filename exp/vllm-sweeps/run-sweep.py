@@ -367,29 +367,18 @@ def extract_metrics(result_json: dict) -> dict[str, float]:
 # MLflow logging
 # ---------------------------------------------------------------------------
 
-def log_run(run_name: str, model: str, server_params: dict,
-            workload_params: dict, metrics: dict | None = None,
-            error: str | None = None):
-    """Log one sweep cell to MLflow. Params are flat (no prefix)."""
-    with mlflow.start_run(run_name=run_name):
-        for env_key in ("BRANCH", "COMMIT"):
-            val = os.environ.get(env_key)
-            if val:
-                mlflow.log_param(env_key.lower(), val)
+def log_params(model: str, server_params: dict, workload_params: dict):
+    """Log sweep cell parameters to the active MLflow run."""
+    for env_key in ("BRANCH", "COMMIT"):
+        val = os.environ.get(env_key)
+        if val:
+            mlflow.log_param(env_key.lower(), val)
 
-        mlflow.log_param("model", model)
-        for k, v in server_params.items():
-            mlflow.log_param(k, v)
-        for k, v in workload_params.items():
-            mlflow.log_param(k, v)
-
-        if error:
-            mlflow.log_param("status", "failed")
-            mlflow.log_param("error", str(error)[:250])
-        else:
-            mlflow.log_param("status", "success")
-            for k, v in (metrics or {}).items():
-                mlflow.log_metric(k, v)
+    mlflow.log_param("model", model)
+    for k, v in server_params.items():
+        mlflow.log_param(k, v)
+    for k, v in workload_params.items():
+        mlflow.log_param(k, v)
 
 
 # ---------------------------------------------------------------------------
@@ -473,54 +462,60 @@ def main():
         name = ParameterSpace.run_name(params)
 
         try:
-            # Short-circuit: skip if higher pressure than a prior OOM
-            if any(is_strictly_higher_pressure(oom, server_params)
-                   for oom in oom_combos):
-                log_run(name, model_path, server_params, workload_params,
-                        error="Skipped: higher memory pressure than prior OOM")
-                continue
+            with mlflow.start_run(run_name=name):
+                log_params(model_path, server_params, workload_params)
 
-            # Restart server if config changed
-            if server_params != prev_server_config:
-                server.stop()
-                print(f"\n[server] {server_params}")
-                healthy, msg = server.start(model_path, server_params)
-                if not healthy:
-                    print(f"  Server startup failed: {msg[:200]}")
-                    oom_combos.append(server_params)
-                    log_run(name, model_path, server_params, workload_params,
-                            error=f"Server startup failed: {msg[:200]}")
+                # Short-circuit: skip if higher pressure than a prior OOM
+                if any(is_strictly_higher_pressure(oom, server_params)
+                       for oom in oom_combos):
+                    mlflow.log_param("error",
+                                     "Skipped: higher memory pressure than prior OOM")
+                    mlflow.end_run("FAILED")
+                    continue
+
+                # Restart server if config changed
+                if server_params != prev_server_config:
+                    server.stop()
+                    print(f"\n[server] {server_params}")
+                    healthy, msg = server.start(model_path, server_params)
+                    if not healthy:
+                        print(f"  Server startup failed: {msg[:200]}")
+                        oom_combos.append(server_params)
+                        mlflow.log_param("error",
+                                         f"Server startup failed: {msg[:200]}")
+                        mlflow.end_run("FAILED")
+                        prev_server_config = server_params
+                        continue
+                    prev_server_config = server_params
+
+                # Check server health before each benchmark
+                if not server.is_alive():
+                    print("  Server crashed — attempting restart")
+                    mlflow.log_param("error", "Server crashed during benchmark")
+                    mlflow.end_run("FAILED")
+                    server.stop()
+                    healthy, msg = server.start(model_path, server_params)
+                    if not healthy:
+                        oom_combos.append(server_params)
                     prev_server_config = server_params
                     continue
-                prev_server_config = server_params
 
-            # Check server health before each benchmark
-            if not server.is_alive():
-                print("  Server crashed — attempting restart")
-                log_run(name, model_path, server_params, workload_params,
-                        error="Server crashed during benchmark")
-                server.stop()
-                healthy, msg = server.start(model_path, server_params)
-                if not healthy:
-                    oom_combos.append(server_params)
-                prev_server_config = server_params
-                continue
+                with tempfile.TemporaryDirectory(prefix="bench_") as tmpdir:
+                    result = run_benchmark(
+                        server.base_url, model_path, workload_params,
+                        bench_config, Path(tmpdir),
+                    )
 
-            with tempfile.TemporaryDirectory(prefix="bench_") as tmpdir:
-                result = run_benchmark(
-                    server.base_url, model_path, workload_params,
-                    bench_config, Path(tmpdir),
-                )
-
-            if result is None:
-                log_run(name, model_path, server_params, workload_params,
-                        error="Benchmark client failed")
-            else:
-                metrics = extract_metrics(result)
-                log_run(name, model_path, server_params, workload_params,
-                        metrics=metrics)
-                print(f"  → throughput={metrics.get('request_throughput', '?'):.2f} req/s "
-                      f"ttft={metrics.get('mean_ttft_ms', '?'):.1f}ms")
+                if result is None:
+                    mlflow.log_param("error", "Benchmark client failed")
+                    mlflow.end_run("FAILED")
+                else:
+                    metrics = extract_metrics(result)
+                    for k, v in metrics.items():
+                        mlflow.log_metric(k, v)
+                    print(f"  → throughput={metrics.get('request_throughput', '?'):.2f} req/s "
+                          f"ttft={metrics.get('mean_ttft_ms', '?'):.1f}ms")
+                    # context manager exits → FINISHED
         finally:
             client.set_experiment_tag(experiment_id, "n_completed",
                                       str(run_idx + 1))

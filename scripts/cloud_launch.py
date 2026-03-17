@@ -148,12 +148,7 @@ def main():
         if args.config:
             cmd += ["--config", args.config]
         subprocess.run(cmd, check=True)
-    else:
-        print(f"\nNext steps:")
-        print(f"  Run sweep:  python scripts/cloud_run.py {name}")
-        print(f"  Monitor:    gcloud compute ssh {name} --zone={zone} --project={PROJECT} --command='tail -f run.log'")
-        print(f"  Cleanup:    python scripts/cloud_cleanup.py {name}")
-
+    print("\nDone.")
 
 if __name__ == "__main__":
     main()

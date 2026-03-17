@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Manage the MLflow tracking server on GCP.
-
-Usage:
-    python scripts/mlflow.py create [--new-credentials]
-    python scripts/mlflow.py start
-    python scripts/mlflow.py status
-    python scripts/mlflow.py stop
-    python scripts/mlflow.py delete
-"""
+"""Manage the MLflow tracking server on GCP."""
 
 import configparser
 import json
@@ -212,27 +204,6 @@ def cmd_create(new_credentials: bool = False):
         print("  Restored MLflow database from backup.")
 
     # Create systemd service for MLflow with auth
-    service_unit = f"""\
-[Unit]
-Description=MLflow Tracking Server
-After=network.target
-
-[Service]
-Type=simple
-User={ssh_to_vm(MLFLOW_VM_NAME, ZONE, "whoami").stdout.strip()}
-Environment=HOME=/home/{ssh_to_vm(MLFLOW_VM_NAME, ZONE, "whoami").stdout.strip()}
-ExecStart=/home/{ssh_to_vm(MLFLOW_VM_NAME, ZONE, "whoami").stdout.strip()}/.local/bin/mlflow server \
-    --host 0.0.0.0 \
-    --port {MLFLOW_PORT} \
-    --backend-store-uri sqlite:///home/{ssh_to_vm(MLFLOW_VM_NAME, ZONE, "whoami").stdout.strip()}/mlflow/mlflow.db \
-    --app-name basic-auth
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-"""
-    # Get the username once
     vm_user = ssh_to_vm(MLFLOW_VM_NAME, ZONE, "whoami").stdout.strip()
 
     service_unit = f"""\
@@ -403,27 +374,54 @@ def cmd_delete():
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+    import argparse
 
-    command = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        description="Manage the MLflow tracking server on GCP.")
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    if command == "create":
-        new_creds = "--new-credentials" in sys.argv
-        cmd_create(new_credentials=new_creds)
-    elif command == "start":
+    p_create = sub.add_parser("create", help="Provision the MLflow server VM",
+        description="Provision an e2-micro VM in us-west1, install MLflow with "
+                    "basic-auth, set up a systemd service, configure 6-hourly "
+                    "SQLite backup to GCS, and open a firewall rule for the "
+                    "tracking port. Idempotent — skips creation if the VM "
+                    "already exists.")
+    p_create.add_argument("--new-credentials", action="store_true",
+        help="Generate a random admin username and password, written to "
+             "~/.mlflow/credentials. Required on first create.")
+
+    sub.add_parser("start", help="Start the MLflow VM",
+        description="Start the MLflow VM if stopped. Writes the new ephemeral "
+                    "IP to ~/.mlflow/server (local) and gs://bucket/mlflow-server "
+                    "(GCS) so sweep scripts can discover the tracking URI. "
+                    "Idempotent — if already running, just refreshes the IP.")
+
+    sub.add_parser("status", help="Health-check the MLflow server",
+        description="Check VM status, systemd service, and HTTP /health endpoint. "
+                    "Exit codes: 0 = ready, 1 = VM running but MLflow not "
+                    "responding, 2 = VM not running.")
+
+    sub.add_parser("stop", help="Stop the MLflow VM (preserves disk)",
+        description="Back up the SQLite database to GCS, then stop the VM. "
+                    "The disk is preserved so the next 'start' resumes with "
+                    "the same data.")
+
+    sub.add_parser("delete", help="Delete the MLflow VM",
+        description="Back up the SQLite database to GCS (if VM is running), "
+                    "then delete the VM. The GCS backup is retained.")
+
+    args = parser.parse_args()
+
+    if args.command == "create":
+        cmd_create(new_credentials=args.new_credentials)
+    elif args.command == "start":
         cmd_start()
-    elif command == "status":
+    elif args.command == "status":
         sys.exit(cmd_status())
-    elif command == "stop":
+    elif args.command == "stop":
         cmd_stop()
-    elif command == "delete":
+    elif args.command == "delete":
         cmd_delete()
-    else:
-        print(f"Unknown command: {command}")
-        print(__doc__)
-        sys.exit(1)
 
 
 if __name__ == "__main__":
