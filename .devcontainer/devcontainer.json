@@ -32,6 +32,7 @@
     "source=${localEnv:HOME}/.claude,target=/mnt/claude/config,type=bind",
     "source=${localEnv:HOME}/.claude/projects,target=/mnt/claude/projects,type=bind",
     "source=${localEnv:HOME}/.ssh,target=/home/devel/.ssh,type=bind,readonly",
+    "source=${localEnv:HOME}/.mlflow,target=/home/devel/.mlflow,type=bind",
     "source=${localEnv:HOME}/Work/mlflow,target=/home/devel/mlflow,type=bind"
   ],
   "features": {

@@ -33,7 +33,7 @@ procs = {
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     ),
     "sweeps": subprocess.Popen(
-        ["gsutil", "cat", f"{BUCKET}/sweep-*/status.json"],
+        ["gsutil", "cat", f"{BUCKET}/vllm-sweep-*/status.json"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     ),
     "images": subprocess.Popen(
@@ -77,16 +77,16 @@ if not sweeps:
 else:
     sweeps.sort(key=lambda s: s.get("timestamp", ""), reverse=True)
 
-    print(f"  {'RUN ID':<12} {'STATUS':<10} {'VM':<20} {'BRANCH':<16} {'COMMIT':<10} {'TIMESTAMP'}")
-    print(f"  {'-'*12} {'-'*10} {'-'*20} {'-'*16} {'-'*10} {'-'*22}")
+    print(f"  {'SWEEP':<24} {'STATUS':<10} {'VM':<20} {'BRANCH':<16} {'COMMIT':<10} {'TIMESTAMP'}")
+    print(f"  {'-'*24} {'-'*10} {'-'*20} {'-'*16} {'-'*10} {'-'*22}")
     for s in sweeps:
-        run_id = s.get("run_id", "?")
+        sweep_name = s.get("sweep_name", s.get("run_id", "?"))
         status = s.get("status", "?")
         vm = s.get("vm", "?")
         branch = s.get("branch", "?")
         commit = s.get("commit", "?")
         ts = s.get("timestamp", "?")
 
-        print(f"  {run_id:<12} {status:<10} {vm:<20} {branch:<16} {commit:<10} {ts}")
+        print(f"  {sweep_name:<24} {status:<10} {vm:<20} {branch:<16} {commit:<10} {ts}")
         if s.get("status") == "failed" and s.get("error"):
             print(f"    error: {s['error']}")

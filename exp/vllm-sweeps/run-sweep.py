@@ -2,24 +2,25 @@
 """Run a vLLM parameter sweep and log results to MLflow.
 
 This script is environment-agnostic: it reads MLflow configuration from
-environment variables (MLFLOW_TRACKING_URI, MLFLOW_DEFAULT_ARTIFACT_ROOT)
-and works identically in the local devcontainer and on a cloud VM.
+environment variables (MLFLOW_TRACKING_URI) or ~/.mlflow/server, and
+works identically in the local devcontainer and on a cloud VM.
 
 The parameter space is a banded grid: each (input_len, output_len) pair is
 assigned to the smallest max_model_len that fits it. Iterate over vLLM server
 parameters first to avoid excessive server restarts. ParameterSpace iterates
-the space without materializing the grid, and supports index-based lookup
-for progress tracking and resume.
+the space without materializing the grid.
 
 Server params that cause OOM at startup trigger short-circuiting: all
 remaining combos with strictly higher memory pressure are skipped.
 
-Progress is tracked as a scalar completed count via ExperimentProgress.
-The deterministic iteration order means resume just skips the first N entries.
+Progress is tracked via an MLflow experiment tag ("n_completed"). The
+deterministic iteration order means resume just skips the first N entries.
 
 Usage:
     python exp/vllm-sweeps/run-sweep.py
-    python exp/vllm-sweeps/run-sweep.py --config exp/vllm-sweeps/sweep-config.yaml
+    python exp/vllm-sweeps/run-sweep.py --name my-sweep
+    python exp/vllm-sweeps/run-sweep.py --resume           # continue from last completed
+    python exp/vllm-sweeps/run-sweep.py --resume 100       # continue from iteration 100
 """
 
 import argparse
@@ -28,6 +29,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -35,9 +37,8 @@ import urllib.error
 from pathlib import Path
 
 import mlflow
+from mlflow.tracking import MlflowClient
 import yaml
-
-from experiment_progress import ExperimentProgress
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,49 @@ from experiment_progress import ExperimentProgress
 def load_config(path: str) -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+# ---------------------------------------------------------------------------
+# MLflow connection
+# ---------------------------------------------------------------------------
+
+MLFLOW_SERVER_FILE = Path.home() / ".mlflow" / "server"
+
+
+def resolve_tracking_uri() -> str:
+    """Determine the MLflow tracking URI.
+
+    Priority:
+      1. MLFLOW_TRACKING_URI env var (already set)
+      2. ~/.mlflow/server file
+    """
+    uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if uri:
+        return uri
+    if MLFLOW_SERVER_FILE.exists():
+        uri = MLFLOW_SERVER_FILE.read_text().strip()
+        if uri:
+            return uri
+    sys.exit(
+        "ERROR: No MLflow tracking URI found.\n"
+        "Set MLFLOW_TRACKING_URI or create ~/.mlflow/server"
+    )
+
+
+def check_mlflow_health(uri: str):
+    """Verify the MLflow server is reachable before starting the sweep.
+
+    The /health endpoint is exempt from basic-auth in MLflow, so this
+    works regardless of authentication configuration.
+    """
+    try:
+        resp = urllib.request.urlopen(f"{uri}/health", timeout=10)
+        if resp.status == 200:
+            print(f"MLflow server: OK ({uri})")
+            return
+    except (urllib.error.URLError, OSError):
+        pass
+    sys.exit(f"ERROR: MLflow server not reachable at {uri}")
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +168,16 @@ class ParameterSpace:
     def model_path(self, params: dict) -> str:
         """Resolve quantization to HF checkpoint path."""
         return self.checkpoints.get(params["quantization"], self.model_base)
+
+    @staticmethod
+    def run_name(params: dict) -> str:
+        """Generate a human-readable run name from params."""
+        quant = params["quantization"]
+        gpu = f"g{int(params['gpu_memory_utilization'] * 100)}"
+        ml = f"ml{params['max_model_len']}"
+        io = f"in{params['input_len']}-out{params['output_len']}"
+        conc = f"c{params['concurrency']}"
+        return f"{quant}-{gpu}-{ml}-{io}-{conc}"
 
     def __iter__(self):
         for quantization in self.quantizations:
@@ -279,29 +333,33 @@ def run_benchmark(base_url: str, model: str, workload: dict,
     return json.loads(json_files[-1].read_text())
 
 
-# Aggregate metrics to extract from vllm bench serve JSON output.
-METRIC_KEYS = (
+# Aggregate throughput and request-count metrics from vllm bench serve output.
+SUMMARY_METRIC_KEYS = (
     "duration", "completed", "failed",
     "request_throughput", "output_throughput", "total_token_throughput",
     "max_output_tokens_per_s", "max_concurrent_requests",
+)
+
+# Per-metric latency statistics for TTFT, TPOT, ITL, and E2EL.
+# Percentile keys assume metric_percentiles="50,90,95,99" in the config.
+LATENCY_METRIC_KEYS = (
+    "mean_ttft_ms", "median_ttft_ms", "std_ttft_ms",
+    "p50_ttft_ms", "p90_ttft_ms", "p95_ttft_ms", "p99_ttft_ms",
+    "mean_tpot_ms", "median_tpot_ms", "std_tpot_ms",
+    "p50_tpot_ms", "p90_tpot_ms", "p95_tpot_ms", "p99_tpot_ms",
+    "mean_itl_ms", "median_itl_ms", "std_itl_ms",
+    "p50_itl_ms", "p90_itl_ms", "p95_itl_ms", "p99_itl_ms",
+    "mean_e2el_ms", "median_e2el_ms", "std_e2el_ms",
+    "p50_e2el_ms", "p90_e2el_ms", "p95_e2el_ms", "p99_e2el_ms",
 )
 
 
 def extract_metrics(result_json: dict) -> dict[str, float]:
     """Pull benchmark metrics from vllm bench serve JSON output."""
     metrics = {}
-    for key in METRIC_KEYS:
+    for key in SUMMARY_METRIC_KEYS + LATENCY_METRIC_KEYS:
         if key in result_json:
             metrics[key] = float(result_json[key])
-
-    # Per-metric aggregates: mean/median/std/percentiles for ttft, tpot, itl, e2el
-    for key, val in result_json.items():
-        if key.startswith(("mean_", "median_", "std_", "p")) and key.endswith("_ms"):
-            try:
-                metrics[key] = float(val)
-            except (ValueError, TypeError):
-                pass
-
     return metrics
 
 
@@ -309,11 +367,12 @@ def extract_metrics(result_json: dict) -> dict[str, float]:
 # MLflow logging
 # ---------------------------------------------------------------------------
 
-def log_run(model: str, server_params: dict, workload_params: dict,
-            metrics: dict | None = None, error: str | None = None):
+def log_run(run_name: str, model: str, server_params: dict,
+            workload_params: dict, metrics: dict | None = None,
+            error: str | None = None):
     """Log one sweep cell to MLflow. Params are flat (no prefix)."""
-    with mlflow.start_run():
-        for env_key in ("BRANCH", "COMMIT", "RUN_ID"):
+    with mlflow.start_run(run_name=run_name):
+        for env_key in ("BRANCH", "COMMIT"):
             val = os.environ.get(env_key)
             if val:
                 mlflow.log_param(env_key.lower(), val)
@@ -342,29 +401,61 @@ def main():
     parser = argparse.ArgumentParser(description="Run vLLM parameter sweep.")
     parser.add_argument("--config", default=str(default_config),
                         help="Path to sweep config YAML")
-    parser.add_argument("--progress", default=None,
-                        help="Path to write progress JSON (for monitoring "
-                             "and pause/resume)")
+    parser.add_argument("--name", default=None,
+                        help="Experiment name. Auto-generated as "
+                             "vllm-sweep-MMDD-HHMM if not specified. "
+                             "Required when using --resume.")
+    parser.add_argument("--resume", nargs="?", const=-1, type=int, default=None,
+                        help="Resume a sweep. Optionally specify iteration index "
+                             "to start from. Without a value, resumes from the "
+                             "last completed iteration. Requires --name.")
     args = parser.parse_args()
+
+    if args.resume is not None and args.name is None:
+        parser.error("--resume requires --name to identify the experiment")
 
     config = load_config(args.config)
     bench_config = config.get("bench", {})
     serve_config = config.get("serve", {})
 
+    # Discover and verify MLflow tracking server
+    tracking_uri = resolve_tracking_uri()
+    mlflow.set_tracking_uri(tracking_uri)
+    check_mlflow_health(tracking_uri)
+
     sweep = ParameterSpace(config)
     total = len(sweep)
 
-    mlflow.set_experiment("vllm-sweeps")
+    # Experiment naming: use provided name, or generate MMDD-HHMM
+    if args.name:
+        experiment_name = args.name
+    else:
+        from datetime import datetime
+        experiment_name = f"vllm-sweep-{datetime.now().strftime('%m%d-%H%M')}"
 
-    completed = 0
-    if args.progress:
-        completed = ExperimentProgress.load_completed(args.progress)
-    if completed > 0:
-        print(f"Resuming from {completed}/{total}")
-    ExperimentProgress.init(total, args.progress)
-    ExperimentProgress.set_completed(completed)
+    client = MlflowClient()
+    experiment = mlflow.set_experiment(experiment_name)
+    experiment_id = experiment.experiment_id
 
-    print(f"Sweep: {total} total runs")
+    # Determine starting point
+    start_from = 0
+    if args.resume is not None:
+        if args.resume >= 0:
+            start_from = args.resume
+        else:
+            exp = client.get_experiment(experiment_id)
+            completed_str = exp.tags.get("n_completed", "0")
+            start_from = int(completed_str)
+
+        if start_from >= total:
+            print(f"Sweep already complete ({start_from}/{total}).")
+            return
+
+        if start_from > 0:
+            print(f"Resuming from {start_from}/{total}")
+
+    print(f"Experiment: {experiment_name}")
+    print(f"Sweep: {total} total runs, starting at {start_from}")
 
     server = VllmServer(
         host=serve_config.get("host", "127.0.0.1"),
@@ -375,64 +466,64 @@ def main():
     oom_combos: list[dict] = []
     prev_server_config: dict | None = None
 
-    for params in itertools.islice(sweep, completed, None):
+    for run_idx, params in itertools.islice(enumerate(sweep), start_from, None):
         server_params = sweep.server_config(params)
         workload_params = sweep.workload_config(params)
         model_path = sweep.model_path(params)
+        name = ParameterSpace.run_name(params)
 
-        # Short-circuit: skip if higher pressure than a prior OOM
-        if any(is_strictly_higher_pressure(oom, server_params)
-               for oom in oom_combos):
-            log_run(model_path, server_params, workload_params,
-                    error="Skipped: higher memory pressure than prior OOM")
-            ExperimentProgress.step()
-            continue
+        try:
+            # Short-circuit: skip if higher pressure than a prior OOM
+            if any(is_strictly_higher_pressure(oom, server_params)
+                   for oom in oom_combos):
+                log_run(name, model_path, server_params, workload_params,
+                        error="Skipped: higher memory pressure than prior OOM")
+                continue
 
-        # Restart server if config changed
-        if server_params != prev_server_config:
-            server.stop()
-            print(f"\n[server] {server_params}")
-            healthy, msg = server.start(model_path, server_params)
-            if not healthy:
-                print(f"  Server startup failed: {msg[:200]}")
-                oom_combos.append(server_params)
-                log_run(model_path, server_params, workload_params,
-                        error=f"Server startup failed: {msg[:200]}")
-                ExperimentProgress.step()
+            # Restart server if config changed
+            if server_params != prev_server_config:
+                server.stop()
+                print(f"\n[server] {server_params}")
+                healthy, msg = server.start(model_path, server_params)
+                if not healthy:
+                    print(f"  Server startup failed: {msg[:200]}")
+                    oom_combos.append(server_params)
+                    log_run(name, model_path, server_params, workload_params,
+                            error=f"Server startup failed: {msg[:200]}")
+                    prev_server_config = server_params
+                    continue
+                prev_server_config = server_params
+
+            # Check server health before each benchmark
+            if not server.is_alive():
+                print("  Server crashed — attempting restart")
+                log_run(name, model_path, server_params, workload_params,
+                        error="Server crashed during benchmark")
+                server.stop()
+                healthy, msg = server.start(model_path, server_params)
+                if not healthy:
+                    oom_combos.append(server_params)
                 prev_server_config = server_params
                 continue
-            prev_server_config = server_params
 
-        # Check server health before each benchmark
-        if not server.is_alive():
-            print("  Server crashed — attempting restart")
-            log_run(model_path, server_params, workload_params,
-                    error="Server crashed during benchmark")
-            ExperimentProgress.step()
-            server.stop()
-            healthy, msg = server.start(model_path, server_params)
-            if not healthy:
-                oom_combos.append(server_params)
-            prev_server_config = server_params
-            continue
+            with tempfile.TemporaryDirectory(prefix="bench_") as tmpdir:
+                result = run_benchmark(
+                    server.base_url, model_path, workload_params,
+                    bench_config, Path(tmpdir),
+                )
 
-        with tempfile.TemporaryDirectory(prefix="bench_") as tmpdir:
-            result = run_benchmark(
-                server.base_url, model_path, workload_params,
-                bench_config, Path(tmpdir),
-            )
-
-        if result is None:
-            log_run(model_path, server_params, workload_params,
-                    error="Benchmark client failed")
-        else:
-            metrics = extract_metrics(result)
-            log_run(model_path, server_params, workload_params,
-                    metrics=metrics)
-            print(f"  → throughput={metrics.get('request_throughput', '?'):.2f} req/s "
-                  f"ttft={metrics.get('mean_ttft_ms', '?'):.1f}ms")
-
-        ExperimentProgress.step()
+            if result is None:
+                log_run(name, model_path, server_params, workload_params,
+                        error="Benchmark client failed")
+            else:
+                metrics = extract_metrics(result)
+                log_run(name, model_path, server_params, workload_params,
+                        metrics=metrics)
+                print(f"  → throughput={metrics.get('request_throughput', '?'):.2f} req/s "
+                      f"ttft={metrics.get('mean_ttft_ms', '?'):.1f}ms")
+        finally:
+            client.set_experiment_tag(experiment_id, "n_completed",
+                                      str(run_idx + 1))
 
     server.stop()
     print("Sweep complete.")

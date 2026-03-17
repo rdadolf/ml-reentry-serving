@@ -4,10 +4,12 @@
 Optionally also runs a sweep (--run) and/or cleans up after (--cleanup/--delete).
 
 Usage:
-    python scripts/cloud_launch.py                          # Provision only
-    python scripts/cloud_launch.py --gpu                    # Provision with GPU
-    python scripts/cloud_launch.py --run -- --config x.yaml # Provision + run sweep
-    python scripts/cloud_launch.py --run --delete -- ...    # Fire-and-forget
+    python scripts/cloud_launch.py                                    # Provision only
+    python scripts/cloud_launch.py --gpu                              # Provision with GPU
+    python scripts/cloud_launch.py --run                              # Provision + run sweep
+    python scripts/cloud_launch.py --run --config x.yaml              # Custom config
+    python scripts/cloud_launch.py --run --delete                     # Fire-and-forget
+    python scripts/cloud_launch.py --run --sweep-name vllm-sweep-0316 # Resume
 """
 
 import argparse
@@ -44,36 +46,32 @@ from gcp import (
 
 
 def parse_args():
-    # Split on -- to separate our args from sweep pass-through args
-    argv = sys.argv[1:]
-    passthrough = []
-    if "--" in argv:
-        idx = argv.index("--")
-        passthrough = argv[idx + 1 :]
-        argv = argv[:idx]
-
     parser = argparse.ArgumentParser(description="Provision a GCP VM and build the sweep container.")
     parser.add_argument("--gpu", action="store_true", help="Use A100 GPU instance")
-    parser.add_argument("--name", default=None, help=f"VM name (default: {VM_NAME_PREFIX}-<hex>)")
+    parser.add_argument("--vm-name", default=None, help=f"VM name (default: {VM_NAME_PREFIX}-<hex>)")
     parser.add_argument("--machine-type", default=None, help="Override machine type")
     parser.add_argument("--zone", default=ZONE, help=f"GCP zone (default: {ZONE})")
     parser.add_argument("--git-force", action="store_true", help="Skip clean-git check")
     parser.add_argument("--run", action="store_true", help="Also run a sweep after setup")
     parser.add_argument("--cleanup", action="store_true", help="Stop VM after run")
     parser.add_argument("--delete", action="store_true", help="Delete VM after run (implies --cleanup)")
-    args = parser.parse_args(argv)
+    parser.add_argument("--sweep-name", default=None,
+                        help="Sweep name (for resume). Auto-generated if not specified.")
+    parser.add_argument("--config", default=None,
+                        help="Path to sweep config YAML (on the VM)")
+    args = parser.parse_args()
 
     if args.delete:
         args.cleanup = True
-    if (args.cleanup or passthrough) and not args.run:
-        parser.error("--cleanup/--delete/pass-through args require --run")
+    if args.cleanup and not args.run:
+        parser.error("--cleanup/--delete require --run")
 
-    return args, passthrough
+    return args
 
 
 def main():
     check_not_in_docker()
-    args, passthrough = parse_args()
+    args = parse_args()
 
     # ── Validate ──────────────────────────────────────────────────────
     if not args.git_force and not git_is_clean():
@@ -102,7 +100,7 @@ def main():
 
     # ── Resolve instance config ───────────────────────────────────────
     machine_type = args.machine_type or (GPU_MACHINE_TYPE if args.gpu else CPU_MACHINE_TYPE)
-    name = args.name or generate_vm_name()
+    name = args.vm_name or generate_vm_name()
     zone = args.zone
 
     print(f"\n{'='*60}")
@@ -145,9 +143,10 @@ def main():
             cmd.append("--delete")
         elif args.cleanup:
             cmd.append("--cleanup")
-        if passthrough:
-            cmd.append("--")
-            cmd.extend(passthrough)
+        if args.sweep_name:
+            cmd += ["--sweep-name", args.sweep_name]
+        if args.config:
+            cmd += ["--config", args.config]
         subprocess.run(cmd, check=True)
     else:
         print(f"\nNext steps:")

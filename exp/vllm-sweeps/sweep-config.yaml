@@ -11,7 +11,6 @@ model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
 # Quantization method → HuggingFace checkpoint
 checkpoints:
   awq_marlin: "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
-  # gptq_int8: "some-org/Meta-Llama-3.1-8B-Instruct-GPTQ-INT8"
 
 server:
   quantization: [awq_marlin]

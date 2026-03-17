@@ -2,9 +2,9 @@
 """Download sweep results from GCS.
 
 Usage:
-    python scripts/pull_results.py              # List available runs
-    python scripts/pull_results.py 0309-1422    # Pull to <repo>/results/sweep-0309-1422/
-    python scripts/pull_results.py 0309-1422 -d /tmp/out  # Pull to /tmp/out/
+    python scripts/pull_results.py                              # List available sweeps
+    python scripts/pull_results.py vllm-sweep-0309-1422         # Pull to <repo>/results/vllm-sweep-0309-1422/
+    python scripts/pull_results.py vllm-sweep-0309-1422 -d /tmp # Pull to /tmp/
 """
 
 import argparse
@@ -26,28 +26,28 @@ def git_root() -> Path:
 
 parser = argparse.ArgumentParser(description="Pull sweep results from GCS.")
 parser.add_argument(
-    "run_id",
+    "sweep_name",
     nargs="?",
     default=None,
-    help="Run ID to pull (e.g. 0309-1422). Omit to list available runs.",
+    help="Sweep name to pull (e.g. vllm-sweep-0309-1422). Omit to list available.",
 )
 parser.add_argument(
     "-d", "--dest",
     default=None,
-    help="Destination directory. Default: <repo>/results/sweep-<run-id>/",
+    help="Destination directory. Default: <repo>/results/<sweep-name>/",
 )
 args = parser.parse_args()
 
-if args.run_id is None:
-    print(f"Available runs in {BUCKET}:\n")
+if args.sweep_name is None:
+    print(f"Available sweeps in {BUCKET}:\n")
     run(["gcloud", "storage", "ls", f"{BUCKET}/"], check=False)
 else:
     if args.dest:
         dest = Path(args.dest)
     else:
-        dest = git_root() / "results" / f"sweep-{args.run_id}"
+        dest = git_root() / "results" / args.sweep_name
     dest.mkdir(parents=True, exist_ok=True)
-    source = f"{BUCKET}/sweep-{args.run_id}/"
+    source = f"{BUCKET}/{args.sweep_name}/"
     print(f"Pulling {source} -> {dest}/")
     run(["gcloud", "storage", "rsync", source, str(dest), "--recursive"])
     print(f"Done. Results in {dest}/")
