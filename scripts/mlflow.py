@@ -85,7 +85,7 @@ def write_server_uri(ip: str):
     run(
         ["gcloud", f"--project={PROJECT}", "storage", "cp", "-",
          GCS_SERVER_PATH],
-        input=uri, text=True,
+        input=uri,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         check=False,
     )
@@ -137,6 +137,16 @@ def vm_external_ip() -> str | None:
     return ip if ip else None
 
 
+def update_allowed_hosts(ip: str):
+    """Update the MLflow service's --allowed-hosts with the current ephemeral IP."""
+    hosts = f"{ip}:{MLFLOW_PORT},{ip},localhost,localhost:{MLFLOW_PORT}"
+    ssh_to_vm(MLFLOW_VM_NAME, ZONE,
+              f"sudo sed -i 's|--allowed-hosts [^ ]*|--allowed-hosts {hosts}|' "
+              f"/etc/systemd/system/mlflow.service && "
+              f"sudo systemctl daemon-reload && "
+              f"sudo systemctl restart mlflow")
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -159,7 +169,7 @@ def cmd_create(new_credentials: bool = False):
         gcloud(
             "compute", "instances", "create", MLFLOW_VM_NAME,
             f"--zone={ZONE}",
-            "--machine-type=e2-micro",
+            "--machine-type=e2-small",
             "--image-family=ubuntu-2204-lts",
             "--image-project=ubuntu-os-cloud",
             "--boot-disk-size=10GB",
@@ -180,12 +190,13 @@ def cmd_create(new_credentials: bool = False):
 
     wait_for_ssh(MLFLOW_VM_NAME, ZONE)
 
-    # Install MLflow on the VM
+    # Install MLflow on the VM in a venv
     print("Installing MLflow on VM...")
     ssh_to_vm(MLFLOW_VM_NAME, ZONE,
-              "sudo apt-get update -qq && "
-              "sudo apt-get install -y -qq python3-pip > /dev/null 2>&1 && "
-              "pip3 install --quiet mlflow")
+              "sudo apt-get update && "
+              "sudo apt-get install -y python3-pip python3-venv python3.10-venv && "
+              "python3 -m venv ~/mlflow-venv && "
+              "~/mlflow-venv/bin/pip install 'mlflow[auth]'")
 
     # Create the MLflow data directory
     ssh_to_vm(MLFLOW_VM_NAME, ZONE, "mkdir -p ~/mlflow")
@@ -215,11 +226,17 @@ After=network.target
 Type=simple
 User={vm_user}
 Environment=HOME=/home/{vm_user}
-ExecStart=/home/{vm_user}/.local/bin/mlflow server \
+Environment=PATH=/home/{vm_user}/mlflow-venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=MLFLOW_FLASK_SERVER_SECRET_KEY={secrets.token_hex(32)}
+Environment=MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false
+Environment=MLFLOW_AUTH_CONFIG_PATH=/home/{vm_user}/.mlflow/basic_auth.ini
+ExecStart=/home/{vm_user}/mlflow-venv/bin/mlflow server \
     --host 0.0.0.0 \
     --port {MLFLOW_PORT} \
     --backend-store-uri sqlite:////home/{vm_user}/mlflow/mlflow.db \
-    --app-name basic-auth
+    --app-name basic-auth \
+    --workers 1 \
+    --allowed-hosts placeholder
 Restart=on-failure
 RestartSec=5
 
@@ -234,6 +251,7 @@ WantedBy=multi-user.target
     auth_config = f"""\
 [mlflow]
 default_permission = READ
+database_uri = sqlite:////home/{vm_user}/mlflow/basic_auth.db
 admin_username = {username}
 admin_password = {password}
 authorization_function = mlflow.server.auth:authenticate_request_basic_auth
@@ -255,11 +273,11 @@ authorization_function = mlflow.server.auth:authenticate_request_basic_auth
     # Start the service
     ssh_to_vm(MLFLOW_VM_NAME, ZONE,
               "sudo systemctl daemon-reload && "
-              "sudo systemctl enable mlflow && "
-              "sudo systemctl start mlflow")
+              "sudo systemctl enable mlflow")
 
     ip = vm_external_ip()
     if ip:
+        update_allowed_hosts(ip)
         write_server_uri(ip)
 
     print(f"\nMLflow server created and running on {MLFLOW_VM_NAME}.")
@@ -280,9 +298,12 @@ def cmd_start():
     print(f"Starting VM {MLFLOW_VM_NAME}...")
     gcloud("compute", "instances", "start", MLFLOW_VM_NAME, f"--zone={ZONE}")
 
-    # Get the new ephemeral IP (available immediately after start returns)
+    wait_for_ssh(MLFLOW_VM_NAME, ZONE)
+
+    # Get the new ephemeral IP and update allowed hosts
     ip = vm_external_ip()
     if ip:
+        update_allowed_hosts(ip)
         write_server_uri(ip)
     else:
         print("  WARNING: Could not determine external IP.")
@@ -381,7 +402,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_create = sub.add_parser("create", help="Provision the MLflow server VM",
-        description="Provision an e2-micro VM in us-west1, install MLflow with "
+        description="Provision an e2-small VM in us-west1, install MLflow with "
                     "basic-auth, set up a systemd service, configure 6-hourly "
                     "SQLite backup to GCS, and open a firewall rule for the "
                     "tracking port. Idempotent — skips creation if the VM "
