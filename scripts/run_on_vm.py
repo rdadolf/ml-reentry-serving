@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """Run on the GCP VM (not inside a container).
 
-Executes a sweep inside the pre-built container, uploads results to
-GCS, and optionally stops or deletes the VM.
+Executes a sweep inside the pre-built container and writes status to GCS.
+All experiment data goes directly to the MLflow tracking server.
 
 Expected environment variables (set by cloud_run.py):
     HF_TOKEN     — Hugging Face token for model downloads
     BUCKET       — GCS bucket (gs://...)
-    RUN_ID       — Identifier for this sweep run (MMDD-HHMM)
+    SWEEP_NAME   — Sweep identifier (e.g. vllm-sweep-0316-1430)
     BRANCH       — Git branch (for metadata)
     COMMIT       — Commit SHA (for metadata)
     AFTER_RUN    — "none", "stop", or "delete"
     PROJECT      — GCP project ID (needed for self-delete)
     VM_ZONE      — GCP zone (needed for self-delete)
 
-Any additional arguments are passed through to run-sweep.py.
+Optional CLI arguments:
+    --config PATH   Path to sweep config YAML (inside container)
 """
 
 import json
@@ -39,7 +40,7 @@ def env(name: str) -> str:
 
 HF_TOKEN = env("HF_TOKEN")
 BUCKET = env("BUCKET")
-RUN_ID = env("RUN_ID")
+SWEEP_NAME = env("SWEEP_NAME")
 BRANCH = env("BRANCH")
 COMMIT = env("COMMIT")
 AFTER_RUN = env("AFTER_RUN")
@@ -47,10 +48,17 @@ PROJECT = env("PROJECT")
 VM_ZONE = env("VM_ZONE")
 
 REPO_DIR = Path.home() / "repo"
-RESULTS_DIR = Path.home() / "results" / RUN_ID
-STATUS_PATH = f"{BUCKET}/sweep-{RUN_ID}/status.json"
+STATUS_PATH = f"{BUCKET}/{SWEEP_NAME}/status.json"
+GCS_MLFLOW_SERVER = f"{BUCKET}/mlflow-server"
 VM_NAME = socket.gethostname()
-PASSTHROUGH_ARGS = sys.argv[1:]
+
+
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(description="Run sweep on VM.")
+    parser.add_argument("--config", default=None,
+                        help="Path to sweep config YAML (inside container)")
+    return parser.parse_args()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -64,7 +72,7 @@ def write_status(status: str, error: str = ""):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     data = {
         "status": status,
-        "run_id": RUN_ID,
+        "sweep_name": SWEEP_NAME,
         "vm": VM_NAME,
         "branch": BRANCH,
         "commit": COMMIT,
@@ -92,24 +100,40 @@ def upload_run_log():
     log = Path.home() / "run.log"
     if log.exists():
         run(
-            ["gcloud", "storage", "cp", str(log), f"{BUCKET}/sweep-{RUN_ID}/run.log"],
+            ["gcloud", "storage", "cp", str(log),
+             f"{BUCKET}/{SWEEP_NAME}/run.log"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             check=False,
         )
 
 
+def read_mlflow_uri() -> str:
+    """Read the MLflow tracking URI from GCS."""
+    result = run(
+        ["gcloud", "storage", "cat", GCS_MLFLOW_SERVER],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        sys.exit(
+            f"ERROR: Could not read MLflow server URI from {GCS_MLFLOW_SERVER}.\n"
+            "Run: python scripts/mlflow.py start"
+        )
+    return result.stdout.strip()
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
+    args = parse_args()
+
     print("=== run_on_vm.py ===")
-    print(f"Run ID:    {RUN_ID}")
+    print(f"Sweep:     {SWEEP_NAME}")
     print(f"After run: {AFTER_RUN}")
     print(datetime.now())
 
-    # Set up results directories
-    (RESULTS_DIR / "mlflow").mkdir(parents=True, exist_ok=True)
-    RESULTS_DIR.chmod(0o777)
-    (RESULTS_DIR / "mlflow").chmod(0o777)
+    # Discover MLflow tracking server
+    mlflow_uri = read_mlflow_uri()
+    print(f"MLflow tracking: {mlflow_uri}")
 
     write_status("running")
 
@@ -122,17 +146,17 @@ def main():
         docker_cmd += ["--gpus", "all"]
     docker_cmd += [
         "-v", f"{REPO_DIR}:/x/workspace",
-        "-v", f"{RESULTS_DIR}:/results",
         "-e", f"HF_TOKEN={HF_TOKEN}",
-        "-e", "MLFLOW_TRACKING_URI=sqlite:////results/mlflow/mlflow.db",
-        "-e", "MLFLOW_DEFAULT_ARTIFACT_ROOT=/results/mlflow/artifacts",
-        "-e", f"RUN_ID={RUN_ID}",
+        "-e", f"MLFLOW_TRACKING_URI={mlflow_uri}",
         "-e", f"BRANCH={BRANCH}",
         "-e", f"COMMIT={COMMIT}",
         "sweep:latest",
         "bash", "/x/workspace/.devcontainer/cloud-entrypoint.sh",
-        *PASSTHROUGH_ARGS,
+        "--name", SWEEP_NAME,
+        "--resume",
     ]
+    if args.config:
+        docker_cmd += ["--config", args.config]
 
     result = run(docker_cmd, check=False)
     if result.returncode != 0:
@@ -145,15 +169,6 @@ def main():
                 error_detail = last_line
         write_status("failed", error_detail)
         sys.exit(result.returncode)
-
-    # Upload results
-    print("--- Uploading results ---")
-    run([
-        "gcloud", "storage", "rsync",
-        str(RESULTS_DIR), f"{BUCKET}/sweep-{RUN_ID}/",
-        "--recursive",
-    ], check=True)
-    print(f"Results uploaded to {BUCKET}/sweep-{RUN_ID}/")
 
     write_status("complete")
     print("=== Sweep complete ===")

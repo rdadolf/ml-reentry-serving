@@ -14,12 +14,12 @@ from gcp import PROJECT, VM_NAME_PREFIX, ZONE, check_not_in_docker, gcloud
 check_not_in_docker()
 
 parser = argparse.ArgumentParser(description="Stop or delete a sweep VM.")
-parser.add_argument("name", nargs="?", default=None, help="VM name")
+parser.add_argument("vm_name", nargs="?", default=None, help="VM name")
 parser.add_argument("--zone", default=ZONE, help=f"GCP zone (default: {ZONE})")
 parser.add_argument("--delete", action="store_true", help="Delete the VM (default: stop)")
 args = parser.parse_args()
 
-if args.name is None:
+if args.vm_name is None:
     print(f"ERROR: VM name is required.\n", file=sys.stderr)
     print(f"Matching instances:", file=sys.stderr)
     gcloud(
@@ -32,15 +32,15 @@ if args.name is None:
 
 if args.delete:
     gcloud(
-        "compute", "instances", "delete", args.name,
+        "compute", "instances", "delete", args.vm_name,
         f"--zone={args.zone}",
         "--quiet",
     )
-    print(f"Deleted {args.name}.")
+    print(f"Deleted {args.vm_name}.")
 else:
     gcloud(
-        "compute", "instances", "stop", args.name,
+        "compute", "instances", "stop", args.vm_name,
         f"--zone={args.zone}",
     )
-    print(f"Stopped {args.name}.")
+    print(f"Stopped {args.vm_name}.")
     print(f"Note: Stopped VMs still incur disk costs. Use --delete to remove entirely.")

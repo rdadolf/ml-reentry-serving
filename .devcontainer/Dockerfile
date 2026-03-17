@@ -81,11 +81,4 @@ ENV PATH="/opt/venv/bin:${PATH}"
 WORKDIR /x/workspace
 COPY pyproject.toml uv.lock ./
 
-# MLflow: SQLite backend on the persistent bind mount
-ENV MLFLOW_TRACKING_URI="sqlite:////home/devel/mlflow/mlflow.db"
-ENV MLFLOW_DEFAULT_ARTIFACT_ROOT="/home/devel/mlflow/artifacts"
-
-# Alias for mlflow ui (doesn't respect MLFLOW_TRACKING_URI)
-RUN echo 'alias mlflow-ui="mlflow ui --backend-store-uri \$MLFLOW_TRACKING_URI"' >> /home/devel/.bashrc
-
 USER devel
