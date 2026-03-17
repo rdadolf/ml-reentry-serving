@@ -118,8 +118,10 @@ def main():
     docker_cmd = ["sudo", "docker", "run", "--rm"]
     if gpu:
         docker_cmd += ["--gpus", "all"]
+    vm_user_home = Path.home()
     docker_cmd += [
         "-v", f"{REPO_DIR}:/x/workspace",
+        "-v", f"{vm_user_home}/.mlflow:/home/devel/.mlflow:ro",
         "-e", f"HF_TOKEN={HF_TOKEN}",
         "-e", f"MLFLOW_TRACKING_URI={mlflow_uri}",
         "-e", f"BRANCH={BRANCH}",
