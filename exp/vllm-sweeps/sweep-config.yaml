@@ -27,6 +27,7 @@ workload:
 bench:
   request_rate: inf
   metric_percentiles: "50,90,95,99"
+  benchmark_timeout: 1800
 
 serve:
   host: "127.0.0.1"

@@ -140,6 +140,7 @@ def main():
         docker_cmd += ["--gpus", "all"]
     docker_cmd += [
         "-v", f"{REPO_DIR}:/x/workspace",
+        "-e", "PYTHONUNBUFFERED=1",
         "-e", f"HF_TOKEN={HF_TOKEN}",
         "-e", f"MLFLOW_TRACKING_URI={mlflow_uri}",
         "-e", f"MLFLOW_TRACKING_USERNAME={mlflow_user}",

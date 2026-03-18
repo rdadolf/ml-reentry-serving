@@ -282,6 +282,42 @@ class VllmServer:
     def is_alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    def has_pending_requests(self) -> bool:
+        """Check /metrics for in-flight or queued requests."""
+        try:
+            resp = urllib.request.urlopen(
+                f"{self.base_url}/metrics", timeout=5)
+            body = resp.read().decode()
+            for line in body.splitlines():
+                if line.startswith(("vllm:num_requests_running",
+                                    "vllm:num_requests_waiting")):
+                    val = float(line.split()[-1])
+                    if val > 0:
+                        return True
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+        return False
+
+    def drain_or_restart(self, model: str, server_params: dict,
+                         drain_timeout: int = 30) -> bool:
+        """Wait for pending requests to drain; restart if they don't.
+
+        Returns True if the server is healthy afterward.
+        """
+        deadline = time.monotonic() + drain_timeout
+        while time.monotonic() < deadline:
+            if not self.has_pending_requests():
+                print("  Server drained, continuing.")
+                return True
+            time.sleep(2)
+
+        print("  Server still has pending requests — restarting.")
+        self.stop()
+        healthy, msg = self.start(model, server_params)
+        if not healthy:
+            print(f"  Restart failed: {msg[:200]}")
+        return healthy
+
     def _read_logs(self) -> str:
         if self.process and self.process.stdout:
             try:
@@ -295,9 +331,13 @@ class VllmServer:
 # Benchmark runner
 # ---------------------------------------------------------------------------
 
+_TIMEOUT = "TIMEOUT"
+
+
 def run_benchmark(base_url: str, model: str, workload: dict,
-                  bench_config: dict, result_dir: Path) -> dict | None:
-    """Run `vllm bench serve` and return parsed JSON, or None on failure."""
+                  bench_config: dict, result_dir: Path) -> dict | str | None:
+    """Run `vllm bench serve` and return parsed JSON, _TIMEOUT, or None."""
+    timeout = int(bench_config.get("benchmark_timeout", 1800))
     cmd = [
         "vllm", "bench", "serve",
         "--base-url", base_url,
@@ -320,10 +360,10 @@ def run_benchmark(base_url: str, model: str, workload: dict,
           f"input_len={workload['input_len']} output_len={workload['output_len']}")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        print("  Benchmark timed out (600s)")
-        return None
+        print(f"  Benchmark timed out ({timeout}s)")
+        return _TIMEOUT
 
     if result.returncode != 0:
         print(f"  Benchmark failed (rc={result.returncode}): {result.stderr[-500:]}")
@@ -510,7 +550,11 @@ def main():
                         bench_config, Path(tmpdir),
                     )
 
-                if result is None:
+                if result is _TIMEOUT:
+                    mlflow.log_param("error", "Benchmark timed out")
+                    mlflow.end_run("FAILED")
+                    server.drain_or_restart(model_path, server_params)
+                elif result is None:
                     mlflow.log_param("error", "Benchmark client failed")
                     mlflow.end_run("FAILED")
                 else:
