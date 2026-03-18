@@ -1,0 +1,38 @@
+# Rerun config: g85 only.
+#
+# 63 runs failed at gpu_memory_utilization=0.85 due to cascading
+# benchmark timeouts (sweep 2) and a false OOM short-circuit (sweep 3).
+# This config re-runs the full g85 grid (80 runs, 17 redundant).
+#
+# Usage:
+#   1. Delete failed runs from the MLflow experiment
+#   2. Swap this config in place of sweep-config.yaml (or use --config)
+#   3. cloud_run.py <vm> --sweep-name <name> --resume
+#   4. Kill the sweep after the 80 runs complete
+
+model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+checkpoints:
+  awq_marlin: "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+
+server:
+  quantization: [awq_marlin]
+  max_model_len: [1024, 2048, 4096]
+  gpu_memory_utilization: [0.85]
+
+workload:
+  concurrency: [1, 2, 4, 8, 16]
+  input_len: [128, 512, 1024, 2048]
+  output_len: [64, 128, 256, 512]
+  num_prompts: 100
+  num_warmups: 5
+
+bench:
+  request_rate: inf
+  metric_percentiles: "50,90,95,99"
+  benchmark_timeout: 1800
+
+serve:
+  host: "127.0.0.1"
+  port: 8000
+  startup_timeout: 300

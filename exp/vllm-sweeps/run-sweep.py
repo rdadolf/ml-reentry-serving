@@ -230,12 +230,15 @@ def is_pareto_dominated(failed: dict, candidate: dict) -> bool:
 
 class VllmServer:
     def __init__(self, host: str = "127.0.0.1", port: int = 8000,
-                 startup_timeout: int = 300):
+                 startup_timeout: int = 300, log_dir: str | None = None):
         self.host = host
         self.port = port
         self.startup_timeout = startup_timeout
         self.process: subprocess.Popen | None = None
         self.base_url = f"http://{host}:{port}"
+        self.log_dir = Path(log_dir) if log_dir else Path(tempfile.gettempdir())
+        self.log_file: Path | None = None
+        self._log_fh = None
 
     def start(self, model: str, server_params: dict) -> tuple[bool, str]:
         """Start vllm serve. Returns (healthy, diagnostic_message)."""
@@ -245,8 +248,11 @@ class VllmServer:
             cmd.extend([flag, str(value)])
 
         print(f"  Starting vLLM server: {' '.join(cmd)}")
+        self._close_log()
+        self.log_file = self.log_dir / f"vllm-server-{int(time.time())}.log"
+        self._log_fh = open(self.log_file, "w")
         self.process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cmd, stdout=self._log_fh, stderr=subprocess.STDOUT,
         )
         return self._wait_healthy()
 
@@ -292,40 +298,52 @@ class VllmServer:
                 self.process.kill()
                 self.process.wait()
         self.process = None
+        self._close_log()
+
+    def _close_log(self):
+        if self._log_fh is not None:
+            self._log_fh.close()
+            self._log_fh = None
 
     def is_alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
-    def has_pending_requests(self) -> bool:
-        """Check /metrics for in-flight or queued requests."""
+    def is_healthy(self) -> bool:
+        """Active health check via /health endpoint."""
         try:
             resp = urllib.request.urlopen(
-                f"{self.base_url}/metrics", timeout=5)
-            body = resp.read().decode()
-            for line in body.splitlines():
-                if line.startswith(("vllm:num_requests_running",
-                                    "vllm:num_requests_waiting")):
-                    val = float(line.split()[-1])
-                    if val > 0:
-                        return True
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
-        return False
+                f"{self.base_url}/health", timeout=5)
+            return resp.status == 200
+        except (urllib.error.URLError, OSError):
+            return False
 
     def drain_or_restart(self, model: str, server_params: dict,
                          drain_timeout: int = 30) -> bool:
-        """Wait for pending requests to drain; restart if they don't.
+        """Check server health after a timeout, restart if unresponsive.
 
         Returns True if the server is healthy afterward.
         """
+        if not self.is_alive():
+            print("  Server process is dead — restarting.")
+            self.stop()
+            healthy, msg = self.start(model, server_params)
+            if not healthy:
+                print(f"  Restart failed: {msg[:200]}")
+            return healthy
+
+        # Server process alive — check if it's actually responding
         deadline = time.monotonic() + drain_timeout
         while time.monotonic() < deadline:
-            if not self.has_pending_requests():
-                print("  Server drained, continuing.")
+            if self.is_healthy():
+                print("  Server is healthy, continuing.")
                 return True
             time.sleep(2)
 
-        print("  Server still has pending requests — restarting.")
+        # Server alive but not responding
+        print("  Server not responding — restarting.")
+        logs = self._read_logs()
+        if logs:
+            print(f"  Server logs (last 1000 chars):\n{logs[-1000:]}")
         self.stop()
         healthy, msg = self.start(model, server_params)
         if not healthy:
@@ -333,9 +351,9 @@ class VllmServer:
         return healthy
 
     def _read_logs(self) -> str:
-        if self.process and self.process.stdout:
+        if self.log_file and self.log_file.exists():
             try:
-                return self.process.stdout.read().decode(errors="replace")[-4000:]
+                return self.log_file.read_text(errors="replace")[-4000:]
             except Exception:
                 pass
         return ""
@@ -375,8 +393,17 @@ def run_benchmark(base_url: str, model: str, workload: dict,
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         print(f"  Benchmark timed out ({timeout}s)")
+        bench_output = ""
+        if exc.stdout:
+            bench_output += exc.stdout[-2000:] if isinstance(exc.stdout, str) \
+                else exc.stdout.decode(errors="replace")[-2000:]
+        if exc.stderr:
+            bench_output += exc.stderr[-2000:] if isinstance(exc.stderr, str) \
+                else exc.stderr.decode(errors="replace")[-2000:]
+        if bench_output:
+            print(f"  Benchmark output:\n{bench_output}")
         return _TIMEOUT
 
     if result.returncode != 0:
@@ -567,6 +594,9 @@ def main():
 
                 if result is _TIMEOUT:
                     mlflow.log_param("error", "Benchmark timed out")
+                    if server.log_file and server.log_file.exists():
+                        mlflow.log_artifact(str(server.log_file),
+                                            "diagnostics")
                     mlflow.end_run("FAILED")
                     server.drain_or_restart(model_path, server_params)
                 elif result is None:
