@@ -1,0 +1,28 @@
+# g90/g95 only — the g85 runs will be done separately.
+
+model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+checkpoints:
+  awq_marlin: "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+
+server:
+  quantization: [awq_marlin]
+  max_model_len: [1024, 2048, 4096]
+  gpu_memory_utilization: [0.90, 0.95]
+
+workload:
+  concurrency: [1, 2, 4, 8, 16]
+  input_len: [128, 512, 1024, 2048]
+  output_len: [64, 128, 256, 512]
+  num_prompts: 100
+  num_warmups: 5
+
+bench:
+  request_rate: inf
+  metric_percentiles: "50,90,95,99"
+  benchmark_timeout: 1800
+
+serve:
+  host: "127.0.0.1"
+  port: 8000
+  startup_timeout: 300
