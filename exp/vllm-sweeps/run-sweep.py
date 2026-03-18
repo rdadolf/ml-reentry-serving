@@ -203,11 +203,25 @@ class ParameterSpace:
 MEMORY_PRESSURE_KEYS = ("gpu_memory_utilization", "max_model_len")
 
 
-def is_strictly_higher_pressure(failed: dict, candidate: dict) -> bool:
-    """True if candidate has >= pressure on ALL memory axes vs failed."""
-    return all(
+_OOM_PATTERNS = ("out of memory", "oom", "cuda error", "cublas error",
+                  "not enough memory", "torch.cuda.outofmemoryerror")
+
+
+def _looks_like_oom(msg: str) -> bool:
+    """Heuristic: does the failure message suggest a GPU memory issue?"""
+    lower = msg.lower()
+    return any(p in lower for p in _OOM_PATTERNS)
+
+
+def is_pareto_dominated(failed: dict, candidate: dict) -> bool:
+    """True if candidate is strictly dominated: >= on all axes, > on at least one."""
+    dominated = all(
         candidate.get(k, 0) >= failed.get(k, 0) for k in MEMORY_PRESSURE_KEYS
     )
+    strictly = any(
+        candidate.get(k, 0) > failed.get(k, 0) for k in MEMORY_PRESSURE_KEYS
+    )
+    return dominated and strictly
 
 
 # ---------------------------------------------------------------------------
@@ -510,10 +524,10 @@ def main():
                 log_params(model_path, server_params, workload_params)
 
                 # Short-circuit: skip if higher pressure than a prior OOM
-                if any(is_strictly_higher_pressure(oom, server_params)
+                if any(is_pareto_dominated(oom, server_params)
                        for oom in oom_combos):
                     mlflow.log_param("error",
-                                     "Skipped: higher memory pressure than prior OOM")
+                                     "Skipped: Pareto-dominated by prior OOM config")
                     mlflow.end_run("FAILED")
                     continue
 
@@ -524,7 +538,8 @@ def main():
                     healthy, msg = server.start(model_path, server_params)
                     if not healthy:
                         print(f"  Server startup failed: {msg[:200]}")
-                        oom_combos.append(server_params)
+                        if _looks_like_oom(msg):
+                            oom_combos.append(server_params)
                         mlflow.log_param("error",
                                          f"Server startup failed: {msg[:200]}")
                         mlflow.end_run("FAILED")
@@ -539,7 +554,7 @@ def main():
                     mlflow.end_run("FAILED")
                     server.stop()
                     healthy, msg = server.start(model_path, server_params)
-                    if not healthy:
+                    if not healthy and _looks_like_oom(msg):
                         oom_combos.append(server_params)
                     prev_server_config = server_params
                     continue
