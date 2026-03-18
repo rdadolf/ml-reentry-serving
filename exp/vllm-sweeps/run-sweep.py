@@ -203,11 +203,25 @@ class ParameterSpace:
 MEMORY_PRESSURE_KEYS = ("gpu_memory_utilization", "max_model_len")
 
 
-def is_strictly_higher_pressure(failed: dict, candidate: dict) -> bool:
-    """True if candidate has >= pressure on ALL memory axes vs failed."""
-    return all(
+_OOM_PATTERNS = ("out of memory", "oom", "cuda error", "cublas error",
+                  "not enough memory", "torch.cuda.outofmemoryerror")
+
+
+def _looks_like_oom(msg: str) -> bool:
+    """Heuristic: does the failure message suggest a GPU memory issue?"""
+    lower = msg.lower()
+    return any(p in lower for p in _OOM_PATTERNS)
+
+
+def is_pareto_dominated(failed: dict, candidate: dict) -> bool:
+    """True if candidate is strictly dominated: >= on all axes, > on at least one."""
+    dominated = all(
         candidate.get(k, 0) >= failed.get(k, 0) for k in MEMORY_PRESSURE_KEYS
     )
+    strictly = any(
+        candidate.get(k, 0) > failed.get(k, 0) for k in MEMORY_PRESSURE_KEYS
+    )
+    return dominated and strictly
 
 
 # ---------------------------------------------------------------------------
@@ -216,12 +230,15 @@ def is_strictly_higher_pressure(failed: dict, candidate: dict) -> bool:
 
 class VllmServer:
     def __init__(self, host: str = "127.0.0.1", port: int = 8000,
-                 startup_timeout: int = 300):
+                 startup_timeout: int = 300, log_dir: str | None = None):
         self.host = host
         self.port = port
         self.startup_timeout = startup_timeout
         self.process: subprocess.Popen | None = None
         self.base_url = f"http://{host}:{port}"
+        self.log_dir = Path(log_dir) if log_dir else Path(tempfile.gettempdir())
+        self.log_file: Path | None = None
+        self._log_fh = None
 
     def start(self, model: str, server_params: dict) -> tuple[bool, str]:
         """Start vllm serve. Returns (healthy, diagnostic_message)."""
@@ -231,8 +248,11 @@ class VllmServer:
             cmd.extend([flag, str(value)])
 
         print(f"  Starting vLLM server: {' '.join(cmd)}")
+        self._close_log()
+        self.log_file = self.log_dir / f"vllm-server-{int(time.time())}.log"
+        self._log_fh = open(self.log_file, "w")
         self.process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cmd, stdout=self._log_fh, stderr=subprocess.STDOUT,
         )
         return self._wait_healthy()
 
@@ -278,14 +298,62 @@ class VllmServer:
                 self.process.kill()
                 self.process.wait()
         self.process = None
+        self._close_log()
+
+    def _close_log(self):
+        if self._log_fh is not None:
+            self._log_fh.close()
+            self._log_fh = None
 
     def is_alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    def is_healthy(self) -> bool:
+        """Active health check via /health endpoint."""
+        try:
+            resp = urllib.request.urlopen(
+                f"{self.base_url}/health", timeout=5)
+            return resp.status == 200
+        except (urllib.error.URLError, OSError):
+            return False
+
+    def drain_or_restart(self, model: str, server_params: dict,
+                         drain_timeout: int = 30) -> bool:
+        """Check server health after a timeout, restart if unresponsive.
+
+        Returns True if the server is healthy afterward.
+        """
+        if not self.is_alive():
+            print("  Server process is dead — restarting.")
+            self.stop()
+            healthy, msg = self.start(model, server_params)
+            if not healthy:
+                print(f"  Restart failed: {msg[:200]}")
+            return healthy
+
+        # Server process alive — check if it's actually responding
+        deadline = time.monotonic() + drain_timeout
+        while time.monotonic() < deadline:
+            if self.is_healthy():
+                print("  Server is healthy, continuing.")
+                return True
+            time.sleep(2)
+
+        # Server alive but not responding
+        print("  Server not responding — restarting.")
+        logs = self._read_logs()
+        if logs:
+            print(f"  Server logs (last 1000 chars):\n{logs[-1000:]}")
+        self.stop()
+        healthy, msg = self.start(model, server_params)
+        if not healthy:
+            print(f"  Restart failed: {msg[:200]}")
+        return healthy
+
     def _read_logs(self) -> str:
-        if self.process and self.process.stdout:
+        if self.log_file and self.log_file.exists():
             try:
-                return self.process.stdout.read().decode(errors="replace")[-4000:]
+                return self.log_file.read_text(errors="replace")[-4000:]
             except Exception:
                 pass
         return ""
@@ -295,9 +363,13 @@ class VllmServer:
 # Benchmark runner
 # ---------------------------------------------------------------------------
 
+_TIMEOUT = "TIMEOUT"
+
+
 def run_benchmark(base_url: str, model: str, workload: dict,
-                  bench_config: dict, result_dir: Path) -> dict | None:
-    """Run `vllm bench serve` and return parsed JSON, or None on failure."""
+                  bench_config: dict, result_dir: Path) -> dict | str | None:
+    """Run `vllm bench serve` and return parsed JSON, _TIMEOUT, or None."""
+    timeout = int(bench_config.get("benchmark_timeout", 1800))
     cmd = [
         "vllm", "bench", "serve",
         "--base-url", base_url,
@@ -319,7 +391,20 @@ def run_benchmark(base_url: str, model: str, workload: dict,
     print(f"  Benchmark: concurrency={workload['concurrency']} "
           f"input_len={workload['input_len']} output_len={workload['output_len']}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        print(f"  Benchmark timed out ({timeout}s)")
+        bench_output = ""
+        if exc.stdout:
+            bench_output += exc.stdout[-2000:] if isinstance(exc.stdout, str) \
+                else exc.stdout.decode(errors="replace")[-2000:]
+        if exc.stderr:
+            bench_output += exc.stderr[-2000:] if isinstance(exc.stderr, str) \
+                else exc.stderr.decode(errors="replace")[-2000:]
+        if bench_output:
+            print(f"  Benchmark output:\n{bench_output}")
+        return _TIMEOUT
 
     if result.returncode != 0:
         print(f"  Benchmark failed (rc={result.returncode}): {result.stderr[-500:]}")
@@ -466,10 +551,10 @@ def main():
                 log_params(model_path, server_params, workload_params)
 
                 # Short-circuit: skip if higher pressure than a prior OOM
-                if any(is_strictly_higher_pressure(oom, server_params)
+                if any(is_pareto_dominated(oom, server_params)
                        for oom in oom_combos):
                     mlflow.log_param("error",
-                                     "Skipped: higher memory pressure than prior OOM")
+                                     "Skipped: Pareto-dominated by prior OOM config")
                     mlflow.end_run("FAILED")
                     continue
 
@@ -480,7 +565,8 @@ def main():
                     healthy, msg = server.start(model_path, server_params)
                     if not healthy:
                         print(f"  Server startup failed: {msg[:200]}")
-                        oom_combos.append(server_params)
+                        if _looks_like_oom(msg):
+                            oom_combos.append(server_params)
                         mlflow.log_param("error",
                                          f"Server startup failed: {msg[:200]}")
                         mlflow.end_run("FAILED")
@@ -495,7 +581,7 @@ def main():
                     mlflow.end_run("FAILED")
                     server.stop()
                     healthy, msg = server.start(model_path, server_params)
-                    if not healthy:
+                    if not healthy and _looks_like_oom(msg):
                         oom_combos.append(server_params)
                     prev_server_config = server_params
                     continue
@@ -506,7 +592,14 @@ def main():
                         bench_config, Path(tmpdir),
                     )
 
-                if result is None:
+                if result is _TIMEOUT:
+                    mlflow.log_param("error", "Benchmark timed out")
+                    if server.log_file and server.log_file.exists():
+                        mlflow.log_artifact(str(server.log_file),
+                                            "diagnostics")
+                    mlflow.end_run("FAILED")
+                    server.drain_or_restart(model_path, server_params)
+                elif result is None:
                     mlflow.log_param("error", "Benchmark client failed")
                     mlflow.end_run("FAILED")
                 else:

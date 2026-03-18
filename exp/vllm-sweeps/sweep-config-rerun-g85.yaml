@@ -1,21 +1,24 @@
-# Sweep parameter grid.
+# Rerun config: g85 only.
 #
-# run-sweep.py reads this file and iterates over all combinations.
+# 63 runs failed at gpu_memory_utilization=0.85 due to cascading
+# benchmark timeouts (sweep 2) and a false OOM short-circuit (sweep 3).
+# This config re-runs the full g85 grid (80 runs, 17 redundant).
 #
-# server: params that require a vLLM server restart when changed.
-# workload: params that vary per-benchmark without restart.
-# Lists are sweep dimensions; scalars are fixed across all runs.
+# Usage:
+#   1. Delete failed runs from the MLflow experiment
+#   2. Swap this config in place of sweep-config.yaml (or use --config)
+#   3. cloud_run.py <vm> --sweep-name <name> --resume
+#   4. Kill the sweep after the 80 runs complete
 
 model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
-# Quantization method → HuggingFace checkpoint
 checkpoints:
   awq_marlin: "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
 
 server:
   quantization: [awq_marlin]
   max_model_len: [1024, 2048, 4096]
-  gpu_memory_utilization: [0.85, 0.90, 0.95]
+  gpu_memory_utilization: [0.85]
 
 workload:
   concurrency: [1, 2, 4, 8, 16]

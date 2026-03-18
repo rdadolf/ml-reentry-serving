@@ -16,6 +16,7 @@ Usage:
 import shlex
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from gcp import (
     BUCKET,
@@ -93,6 +94,13 @@ def main():
     # Upload the run script
     runner_script = SCRIPTS_DIR / "run_on_vm.py"
     scp_to_vm(args.vm_name, args.zone, str(runner_script), "run_on_vm.py")
+
+    # Upload MLflow credentials
+    mlflow_creds = Path.home() / ".mlflow" / "credentials"
+    if not mlflow_creds.exists():
+        sys.exit(f"ERROR: {mlflow_creds} not found. Run: python scripts/mlflow.py create --new-credentials")
+    ssh_to_vm(args.vm_name, args.zone, "mkdir -p ~/.mlflow")
+    scp_to_vm(args.vm_name, args.zone, str(mlflow_creds), ".mlflow/credentials")
 
     # Build the env + command
     env_vars = " ".join([

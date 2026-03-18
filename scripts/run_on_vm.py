@@ -18,6 +18,7 @@ Optional CLI arguments:
     --config PATH   Path to sweep config YAML (inside container)
 """
 
+import configparser
 import os
 import shutil
 import socket
@@ -47,6 +48,7 @@ PROJECT = env("PROJECT")
 VM_ZONE = env("VM_ZONE")
 
 REPO_DIR = Path.home() / "repo"
+MLFLOW_CREDENTIALS = Path.home() / ".mlflow" / "credentials"
 GCS_MLFLOW_SERVER = f"{BUCKET}/mlflow-server"
 VM_NAME = socket.gethostname()
 
@@ -83,6 +85,23 @@ def upload_run_log():
         )
 
 
+def read_mlflow_credentials() -> tuple[str, str]:
+    """Read MLflow username and password from ~/.mlflow/credentials."""
+    if not MLFLOW_CREDENTIALS.exists():
+        sys.exit(
+            f"ERROR: {MLFLOW_CREDENTIALS} not found.\n"
+            "cloud_run.py should have SCP'd this file to the VM."
+        )
+    config = configparser.ConfigParser()
+    config.read(MLFLOW_CREDENTIALS)
+    try:
+        username = config["mlflow"]["mlflow_tracking_username"]
+        password = config["mlflow"]["mlflow_tracking_password"]
+    except KeyError:
+        sys.exit(f"ERROR: {MLFLOW_CREDENTIALS} is malformed.")
+    return username, password
+
+
 def read_mlflow_uri() -> str:
     """Read the MLflow tracking URI from GCS."""
     result = run(
@@ -107,8 +126,9 @@ def main():
     print(f"After run: {AFTER_RUN}")
     print(datetime.now())
 
-    # Discover MLflow tracking server
+    # Discover MLflow tracking server and credentials
     mlflow_uri = read_mlflow_uri()
+    mlflow_user, mlflow_pass = read_mlflow_credentials()
     print(f"MLflow tracking: {mlflow_uri}")
 
     # Run sweep in container
@@ -120,8 +140,11 @@ def main():
         docker_cmd += ["--gpus", "all"]
     docker_cmd += [
         "-v", f"{REPO_DIR}:/x/workspace",
+        "-e", "PYTHONUNBUFFERED=1",
         "-e", f"HF_TOKEN={HF_TOKEN}",
         "-e", f"MLFLOW_TRACKING_URI={mlflow_uri}",
+        "-e", f"MLFLOW_TRACKING_USERNAME={mlflow_user}",
+        "-e", f"MLFLOW_TRACKING_PASSWORD={mlflow_pass}",
         "-e", f"BRANCH={BRANCH}",
         "-e", f"COMMIT={COMMIT}",
         "sweep:latest",

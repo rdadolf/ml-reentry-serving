@@ -1,21 +1,14 @@
-# Sweep parameter grid.
-#
-# run-sweep.py reads this file and iterates over all combinations.
-#
-# server: params that require a vLLM server restart when changed.
-# workload: params that vary per-benchmark without restart.
-# Lists are sweep dimensions; scalars are fixed across all runs.
+# g90/g95 only — the g85 runs will be done separately.
 
 model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
-# Quantization method → HuggingFace checkpoint
 checkpoints:
   awq_marlin: "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
 
 server:
   quantization: [awq_marlin]
   max_model_len: [1024, 2048, 4096]
-  gpu_memory_utilization: [0.85, 0.90, 0.95]
+  gpu_memory_utilization: [0.90, 0.95]
 
 workload:
   concurrency: [1, 2, 4, 8, 16]
