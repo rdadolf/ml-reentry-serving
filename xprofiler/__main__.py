@@ -16,6 +16,22 @@ def load_trace(path):
             return json.load(f)
 
 
+def cmd_summary(args):
+    from xprofiler import summary, trace
+
+    # Resolve block mapping
+    mappings = {"llama": summary.LLAMA_BLOCKS}
+    block_mapping = mappings.get(args.mapping)
+    if block_mapping is None:
+        print(f"Unknown mapping: {args.mapping}")
+        print(f"Available: {', '.join(mappings.keys())}")
+        sys.exit(1)
+
+    t = trace.load(args.trace)
+    result = summary.summarize(t, block_mapping)
+    print(summary.to_json(result))
+
+
 def cmd_load(args):
     trace = load_trace(args.trace)
     events = trace if isinstance(trace, list) else trace.get("traceEvents", [])
@@ -53,9 +69,19 @@ def main():
     p_load = sub.add_parser("load", help="Load and summarize a trace file")
     p_load.add_argument("trace", help="Path to Chrome trace JSON (.json or .json.gz)")
 
+    p_summary = sub.add_parser("summary", help="Produce per-block architectural summary")
+    p_summary.add_argument("trace", help="Path to Chrome trace JSON (.json or .json.gz)")
+    p_summary.add_argument(
+        "--mapping",
+        default="llama",
+        help="Block mapping to use (default: llama)",
+    )
+
     args = parser.parse_args()
     if args.command == "load":
         cmd_load(args)
+    elif args.command == "summary":
+        cmd_summary(args)
     else:
         parser.print_help()
         sys.exit(1)

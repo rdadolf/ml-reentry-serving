@@ -25,6 +25,12 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # Warmup: a couple generate() calls to stabilize CUDA state
+    print("Warming up...")
+    for _ in range(3):
+        model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=False)
+    torch.cuda.synchronize()
+
     print(f"Running generate() under profiler...")
     with capture(output_dir=OUTPUT_DIR):
         model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=False)
