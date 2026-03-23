@@ -32,22 +32,6 @@ class Trace:
             if e.get("name", "").startswith("nn.Module:") and e.get("ph") == "X"
         ]
 
-    @property
-    def kernel_events(self) -> list[dict]:
-        return [
-            e
-            for e in self.raw_events
-            if e.get("cat") == "kernel" and e.get("ph") == "X"
-        ]
-
-    @property
-    def cpu_op_events(self) -> list[dict]:
-        return [
-            e
-            for e in self.raw_events
-            if e.get("cat") == "cpu_op" and e.get("ph") == "X"
-        ]
-
     def module_tree(self) -> list[ModuleEvent]:
         """Build a containment tree from nn.Module events using timestamp nesting."""
         modules = []
@@ -89,16 +73,6 @@ class Trace:
             stack.append((m, end))
 
         return roots
-
-    def ops_within(self, module: ModuleEvent) -> list[dict]:
-        """Return all cpu_op events whose timestamps fall within a module's span."""
-        end = module.ts + module.dur
-        return [
-            e
-            for e in self.cpu_op_events
-            if e["ts"] >= module.ts and e["ts"] + e.get("dur", 0) <= end
-        ]
-
 
 def load(path: str | Path) -> Trace:
     """Load a Chrome trace JSON file (plain or gzipped)."""

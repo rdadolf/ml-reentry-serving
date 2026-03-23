@@ -2,127 +2,109 @@
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from xprofiler.trace import ModuleEvent, Trace
 
-# TOOD: This is still a bit hardcoded for LLaMA-based models. Some warts:
-# - L93: endswith("ForCausalLM") — assumes the root model class name
-# - L112: "LlamaDecoderLayer" literal — hardcoded for layer counting
-# - L115: fallback "DecoderLayer" substring check — slightly more general but still assumes naming
-# - The "decoder_layer" magic string in the block mapping that gets special-cased to "skip this, it's a container"
-# - No norm splitting (pre-attn vs pre-FFN)
-# - No residual time estimation
 
-
-# Block mappings: dict of module class name -> block label.
-# The summarizer walks the module tree top-down and assigns each module
-# to the first matching block. Unmatched modules fall through to their
-# parent's block, or "other" if at root level.
-
-LLAMA_BLOCKS = {
-    "LlamaAttention": "attention",
-    "LlamaMLP": "mlp",
-    "LlamaRMSNorm": "rms_norm",
-    "LlamaRotaryEmbedding": "rope",
-    "LlamaDecoderLayer": "decoder_layer",
-    "Embedding": "embedding",
-}
+def load_model_config(name: str) -> dict:
+    """Load a model config from xprofiler/models/<name>.json."""
+    config_path = Path(__file__).parent / "models" / f"{name}.json"
+    if not config_path.exists():
+        available = [p.stem for p in config_path.parent.glob("*.json")]
+        raise FileNotFoundError(
+            f"No model config '{name}'. Available: {', '.join(available)}"
+        )
+    with open(config_path) as f:
+        return json.load(f)
 
 
 @dataclass
 class BlockStats:
-    gpu_time_us: float = 0.0
     cpu_time_us: float = 0.0
     count: int = 0
-    per_instance_gpu_us: dict[int, float] = field(default_factory=dict)
+    per_instance_us: dict[int, float] = field(default_factory=dict)
 
 
-def _find_single_step(tree: list[ModuleEvent]) -> list[ModuleEvent]:
+def _find_single_step(tree: list[ModuleEvent], root_module: str) -> list[ModuleEvent]:
     """Extract one forward pass from a generate() trace.
 
     generate() calls forward() multiple times (once per token).
-    The ForCausalLM module event repeats — take the first one only,
-    which includes the prefill + first decode step.
+    The root module event repeats — take the first one only.
     """
     for root in tree:
-        if root.class_name.endswith("ForCausalLM"):
-            # The ForCausalLM node appears once per forward() call.
-            # Return just this one as the root.
+        if root.class_name == root_module:
             return [root]
-    # No ForCausalLM found — return all roots as-is
+    # Fallback: return all roots
     return tree
 
 
-def summarize(trace: Trace, block_mapping: dict[str, str]) -> dict:
+def summarize(trace: Trace, config: dict) -> dict:
     """Walk the module tree and assign time to architectural blocks.
 
-    Scopes to a single forward pass if the trace contains multiple
-    (e.g., from generate()). Returns a dict suitable for JSON serialization.
+    config is a model config dict with keys:
+        root_module, layer_module, block_mapping, containers
     """
+    root_module = config["root_module"]
+    layer_module = config["layer_module"]
+    block_mapping = config["block_mapping"]
+    containers = set(config["containers"])
+
     full_tree = trace.module_tree()
 
-    # Count total forward passes for context
-    all_forward = [
-        r for r in full_tree if r.class_name.endswith("ForCausalLM")
-    ]
+    # Count total forward passes
+    all_forward = [r for r in full_tree if r.class_name == root_module]
     num_steps = len(all_forward)
 
     # Scope to single step
-    tree = _find_single_step(full_tree)
+    tree = _find_single_step(full_tree, root_module)
     stats: dict[str, BlockStats] = {}
 
     def classify(module: ModuleEvent, parent_block: str | None):
         """Assign this module to a block and recurse into children."""
         block = block_mapping.get(module.class_name, parent_block)
 
-        # If this module maps to a block (directly, not inherited),
-        # record its time. Skip "decoder_layer" — it's a container,
-        # its children carry the actual block assignments.
-        if module.class_name in block_mapping and block != "decoder_layer":
+        # Only record time for non-container modules that have a mapping
+        if module.class_name in block_mapping and module.class_name not in containers:
             if block not in stats:
                 stats[block] = BlockStats()
             s = stats[block]
             s.cpu_time_us += module.dur
             s.count += 1
-            s.per_instance_gpu_us[module.instance_id] = (
-                s.per_instance_gpu_us.get(module.instance_id, 0) + module.dur
+            s.per_instance_us[module.instance_id] = (
+                s.per_instance_us.get(module.instance_id, 0) + module.dur
             )
 
-        # Recurse — children inherit this module's block if they don't
-        # have their own mapping
         for child in module.children:
             classify(child, block)
 
-    # Walk scoped tree
     for root in tree:
         classify(root, None)
 
     # Get total time and model name
-    if tree and tree[0].class_name.endswith("ForCausalLM"):
+    if tree and tree[0].class_name == root_module:
         total_time = tree[0].dur
         model_name = tree[0].class_name
     else:
         total_time = sum(r.dur for r in tree)
         model_name = "unknown"
 
-    # Assign unaccounted time to "other"
+    # Unaccounted time
     accounted = sum(s.cpu_time_us for s in stats.values())
     if total_time > accounted:
-        stats["other"] = BlockStats(
-            cpu_time_us=total_time - accounted, count=1
-        )
+        stats["other"] = BlockStats(cpu_time_us=total_time - accounted, count=1)
 
-    # Detect layer count from unique DecoderLayer instance IDs
-    decoder_ids = set()
+    # Layer count from unique layer_module instance IDs
+    layer_ids = set()
 
-    def collect_decoder_ids(modules):
+    def collect_layer_ids(modules):
         for m in modules:
-            if "DecoderLayer" in m.class_name:
-                decoder_ids.add(m.instance_id)
-            collect_decoder_ids(m.children)
+            if m.class_name == layer_module:
+                layer_ids.add(m.instance_id)
+            collect_layer_ids(m.children)
 
-    collect_decoder_ids(tree)
-    num_layers = len(decoder_ids)
+    collect_layer_ids(tree)
+    num_layers = len(layer_ids)
 
     # Build output
     blocks_out = {}
@@ -132,10 +114,10 @@ def summarize(trace: Trace, block_mapping: dict[str, str]) -> dict:
             "pct": round(100 * s.cpu_time_us / total_time, 1) if total_time else 0,
             "count": s.count,
         }
-        if len(s.per_instance_gpu_us) > 1:
+        if len(s.per_instance_us) > 1:
             entry["per_instance_us"] = {
                 k: round(v, 1)
-                for k, v in sorted(s.per_instance_gpu_us.items())
+                for k, v in sorted(s.per_instance_us.items())
             }
         blocks_out[name] = entry
 

@@ -4,6 +4,9 @@
 # For now, let's not commit experiment results
 /results/
 
+# Profiler traces (large, ephemeral)
+/traces/
+
 # VS Code settings (we dynamically change these between worktrees, so we don't want to commit them)
 .vscode/
 

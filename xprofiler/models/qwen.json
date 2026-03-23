@@ -1,0 +1,14 @@
+{
+  "model_id": "Qwen/Qwen2.5-0.5B",
+  "dtype": "float16",
+  "root_module": "Qwen2ForCausalLM",
+  "layer_module": "Qwen2DecoderLayer",
+  "block_mapping": {
+    "Qwen2Attention": "attention",
+    "Qwen2MLP": "mlp",
+    "Qwen2RMSNorm": "norm",
+    "Qwen2RotaryEmbedding": "rope",
+    "Embedding": "embedding"
+  },
+  "containers": ["Qwen2ForCausalLM", "Qwen2Model", "Qwen2DecoderLayer"]
+}

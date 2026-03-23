@@ -1,0 +1,14 @@
+{
+  "model_id": "TinyLlama/TinyLlama-1.1B-step-50K-105b",
+  "dtype": "float16",
+  "root_module": "LlamaForCausalLM",
+  "layer_module": "LlamaDecoderLayer",
+  "block_mapping": {
+    "LlamaAttention": "attention",
+    "LlamaMLP": "mlp",
+    "LlamaRMSNorm": "norm",
+    "LlamaRotaryEmbedding": "rope",
+    "Embedding": "embedding"
+  },
+  "containers": ["LlamaForCausalLM", "LlamaModel", "LlamaDecoderLayer"]
+}

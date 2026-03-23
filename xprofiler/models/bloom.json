@@ -1,0 +1,13 @@
+{
+  "model_id": "bigscience/bloom-560m",
+  "dtype": "float16",
+  "root_module": "BloomForCausalLM",
+  "layer_module": "BloomBlock",
+  "block_mapping": {
+    "BloomAttention": "attention",
+    "BloomMLP": "mlp",
+    "LayerNorm": "norm",
+    "Embedding": "embedding"
+  },
+  "containers": ["BloomForCausalLM", "BloomModel", "BloomBlock"]
+}
