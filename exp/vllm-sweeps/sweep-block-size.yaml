@@ -1,0 +1,30 @@
+# Block-size sweep: isolate the effect of KV cache block size.
+# All other server/workload params are fixed at reasonable defaults.
+
+model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+checkpoints:
+  awq_marlin: "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+
+server:
+  quantization: [awq_marlin]
+  max_model_len: [4096]
+  gpu_memory_utilization: [0.85]
+  block_size: [8, 16, 32]
+
+workload:
+  concurrency: [1, 4, 16]
+  input_len: [512]
+  output_len: [256]
+  num_prompts: 100
+  num_warmups: 5
+
+bench:
+  request_rate: inf
+  metric_percentiles: "50,90,95,99"
+  benchmark_timeout: 1800
+
+serve:
+  host: "127.0.0.1"
+  port: 8000
+  startup_timeout: 300

@@ -111,7 +111,8 @@ class ParameterSpace:
     All swept parameters must be lists in the config.
     """
 
-    SERVER_KEYS = {"quantization", "gpu_memory_utilization", "max_model_len"}
+    SERVER_KEYS = {"quantization", "gpu_memory_utilization", "max_model_len",
+                    "block_size"}
 
     def __init__(self, config: dict):
         server = config.get("server", {})
@@ -122,6 +123,7 @@ class ParameterSpace:
         self.quantizations = sorted(server["quantization"])
         self.gpu_mem_utils = sorted(server["gpu_memory_utilization"])
         self.max_model_lens = sorted(server["max_model_len"])
+        self.block_sizes = sorted(server.get("block_size", [None]))
         self.concurrencies = sorted(workload["concurrency"])
 
         input_lens = sorted(workload["input_len"])
@@ -151,6 +153,7 @@ class ParameterSpace:
         self._total = (
             len(self.quantizations)
             * len(self.gpu_mem_utils)
+            * len(self.block_sizes)
             * self.workloads_per_gpu_mem
         )
 
@@ -177,24 +180,31 @@ class ParameterSpace:
         ml = f"ml{params['max_model_len']}"
         io = f"in{params['input_len']}-out{params['output_len']}"
         conc = f"c{params['concurrency']}"
-        return f"{quant}-{gpu}-{ml}-{io}-{conc}"
+        name = f"{quant}-{gpu}-{ml}-{io}-{conc}"
+        if params.get("block_size") is not None:
+            name += f"-bs{params['block_size']}"
+        return name
 
     def __iter__(self):
         for quantization in self.quantizations:
             for gpu_mem in self.gpu_mem_utils:
-                for band_index, max_len in enumerate(self.max_model_lens):
-                    for input_len, output_len in self.band_pairs[band_index]:
-                        for concurrency in self.concurrencies:
-                            yield {
-                                "quantization": quantization,
-                                "gpu_memory_utilization": gpu_mem,
-                                "max_model_len": max_len,
-                                "input_len": input_len,
-                                "output_len": output_len,
-                                "concurrency": concurrency,
-                                "num_prompts": self.num_prompts,
-                                "num_warmups": self.num_warmups,
-                            }
+                for block_size in self.block_sizes:
+                    for band_index, max_len in enumerate(self.max_model_lens):
+                        for input_len, output_len in self.band_pairs[band_index]:
+                            for concurrency in self.concurrencies:
+                                params = {
+                                    "quantization": quantization,
+                                    "gpu_memory_utilization": gpu_mem,
+                                    "max_model_len": max_len,
+                                    "input_len": input_len,
+                                    "output_len": output_len,
+                                    "concurrency": concurrency,
+                                    "num_prompts": self.num_prompts,
+                                    "num_warmups": self.num_warmups,
+                                }
+                                if block_size is not None:
+                                    params["block_size"] = block_size
+                                yield params
 
 
 # Memory-pressure params: sorted so low pressure comes first, enabling
