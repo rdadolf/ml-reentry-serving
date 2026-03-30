@@ -10,7 +10,7 @@ server:
   quantization: [awq_marlin]
   max_model_len: [4096]
   gpu_memory_utilization: [0.85]
-  block_size: [8, 16, 32]
+  block_size: [16, 32, 64]
 
 workload:
   concurrency: [1, 4, 16]

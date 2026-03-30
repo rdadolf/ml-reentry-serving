@@ -91,6 +91,10 @@ def main():
         print(f"  Config:    {args.config}")
     print(f"{'='*60}\n")
 
+    # Tag the VM with the sweep name so cloud_status.py can find it
+    gcloud("compute", "instances", "add-metadata", args.vm_name,
+           f"--zone={args.zone}", f"--metadata=sweep-name={sweep_name}")
+
     # Upload the run script
     runner_script = SCRIPTS_DIR / "run_on_vm.py"
     scp_to_vm(args.vm_name, args.zone, str(runner_script), "run_on_vm.py")

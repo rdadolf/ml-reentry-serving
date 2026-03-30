@@ -538,6 +538,8 @@ def main():
         if start_from > 0:
             print(f"Resuming from {start_from}/{total}")
 
+    client.set_experiment_tag(experiment_id, "n_total", str(total))
+
     print(f"Experiment: {experiment_name}")
     print(f"Sweep: {total} total runs, starting at {start_from}")
 
@@ -578,7 +580,7 @@ def main():
                         if _looks_like_oom(msg):
                             oom_combos.append(server_params)
                         mlflow.log_param("error",
-                                         f"Server startup failed: {msg[:200]}")
+                                         f"Server startup failed: {msg[:4000]}")
                         mlflow.end_run("FAILED")
                         prev_server_config = server_params
                         continue
