@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /usr/local/bin/uv
 
 ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
 WORKDIR /x/workspace
@@ -54,7 +54,7 @@ ENV CC=clang
 ENV CXX=clang++
 
 # uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /usr/local/bin/uv
 
 # Node.js + Claude Code (for devcontainer use)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \

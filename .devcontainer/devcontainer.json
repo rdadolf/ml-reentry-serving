@@ -46,8 +46,13 @@
     "vscode": {
       "extensions": [
         "anthropic.claude-code",
-        "github.copilot"
-      ]
+        "github.copilot",
+        "ms-python.python"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
+        "python.analysis.typeCheckingMode": "off"
+      }
     }
   },
   "forwardPorts": [
